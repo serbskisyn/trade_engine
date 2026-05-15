@@ -20,7 +20,7 @@ KRAKEN_PAIRS: list[str] = [
     p.strip() for p in os.getenv(
         "KRAKEN_PAIRS",
         "ETH/BTC,SOL/BTC,XRP/BTC,ADA/BTC,LTC/BTC,LINK/BTC,DOT/BTC,ATOM/BTC,DOGE/BTC,XLM/BTC,"
-        "AVAX/BTC,NEAR/BTC,UNI/BTC,AAVE/BTC,MATIC/BTC"
+        "UNI/BTC,AAVE/BTC,ETC/BTC,TRX/BTC,XMR/BTC"
     ).split(",") if p.strip()
 ]
 
