@@ -60,7 +60,8 @@ class AlpacaExchange(BaseExchange):
         except Exception:
             return {}
 
-    async def place_order(self, symbol: str, side: Side, amount: float) -> OrderResult | None:
+    async def place_order(self, symbol: str, side: Side, amount: float,
+                          short: bool = False) -> OrderResult | None:
         try:
             req  = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute, limit=1)
             bars = self._data.get_stock_bars(req)
@@ -87,6 +88,26 @@ class AlpacaExchange(BaseExchange):
         except Exception as e:
             logger.warning("Alpaca close_position failed for %s: %s", symbol, e)
             return False
+
+    async def fetch_trend_bars(self, symbol: str, limit: int = 50) -> pd.DataFrame | None:
+        try:
+            from alpaca.data.timeframe import TimeFrameUnit
+            req  = StockBarsRequest(symbol_or_symbols=symbol,
+                                    timeframe=TimeFrame(1, TimeFrameUnit.Hour), limit=limit)
+            bars = self._data.get_stock_bars(req)
+            df   = bars.df
+            if hasattr(df.index, "levels"):
+                df = df.xs(symbol, level=0) if symbol in df.index.get_level_values(0) else df
+            df = df.reset_index()
+            if "timestamp" not in df.columns:
+                df = df.rename(columns={df.columns[0]: "timestamp"})
+            if len(df) < 20:
+                return None
+            df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+            return df
+        except Exception as e:
+            logger.warning("Alpaca trend_bars failed for %s: %s", symbol, e)
+            return None
 
     async def get_current_price(self, symbol: str) -> float | None:
         try:

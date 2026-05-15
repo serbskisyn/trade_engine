@@ -20,9 +20,10 @@ KRAKEN_PAIRS: list[str] = [
     p.strip() for p in os.getenv(
         "KRAKEN_PAIRS",
         "ETH/BTC,SOL/BTC,XRP/BTC,ADA/BTC,LTC/BTC,LINK/BTC,DOT/BTC,ATOM/BTC,DOGE/BTC,XLM/BTC,"
-        "UNI/BTC,AAVE/BTC,ETC/BTC,TRX/BTC,XMR/BTC"
+        "UNI/BTC,AAVE/BTC,ETC/BTC,TRX/BTC,XMR/BTC,BTC/EUR"
     ).split(",") if p.strip()
 ]
+KRAKEN_ALLOW_SHORTS: bool = os.getenv("KRAKEN_ALLOW_SHORTS", "true").lower() == "true"
 
 # ── Alpaca (US-Aktien) ────────────────────────────────────────────────────────
 ALPACA_API_KEY:       str   = os.getenv("ALPACA_API_KEY", "")
@@ -33,7 +34,10 @@ ALPACA_MAX_POSITIONS: int   = int(os.getenv("ALPACA_MAX_POSITIONS", "3"))
 ALPACA_SYMBOLS: list[str] = [
     s.strip() for s in os.getenv(
         "ALPACA_SYMBOLS",
-        "SPY,QQQ,GLD,AAPL,MSFT,NVDA,TSLA,XLF,USO,AMZN,GOOGL,META,AMD,JPM,IWM"
+        # Long: breite Diversifikation
+        "SPY,QQQ,GLD,AAPL,MSFT,NVDA,TSLA,XLF,USO,AMZN,GOOGL,META,AMD,JPM,IWM,"
+        # Inverse ETFs für Short-Exposure ohne Margin
+        "SQQQ,SDS,SPXS"
     ).split(",") if s.strip()
 ]
 

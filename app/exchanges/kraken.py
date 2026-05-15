@@ -62,13 +62,16 @@ class KrakenExchange(BaseExchange):
             logger.warning("Kraken positions failed: %s", e)
             return {}
 
-    async def place_order(self, symbol: str, side: Side, amount: float) -> OrderResult | None:
+    async def place_order(self, symbol: str, side: Side, amount: float,
+                          short: bool = False) -> OrderResult | None:
         try:
+            params = {"leverage": 2} if short else {}
             order = self._ex.create_order(
                 symbol=symbol,
                 type="market",
                 side=side.value,
                 amount=amount,
+                params=params,
             )
             price = float(order.get("price") or order.get("average") or 0)
             return OrderResult(
@@ -91,6 +94,19 @@ class KrakenExchange(BaseExchange):
         except Exception as e:
             logger.warning("Kraken close_position failed for %s: %s", symbol, e)
             return False
+
+    async def fetch_trend_bars(self, symbol: str, limit: int = 50) -> pd.DataFrame | None:
+        try:
+            ohlcv = self._ex.fetch_ohlcv(symbol, timeframe="1h", limit=limit)
+            if len(ohlcv) < 20:
+                return None
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+            return df
+        except Exception as e:
+            logger.warning("Kraken trend_bars failed for %s: %s", symbol, e)
+            return None
 
     async def get_current_price(self, symbol: str) -> float | None:
         try:

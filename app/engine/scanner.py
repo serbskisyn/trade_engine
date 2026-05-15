@@ -1,11 +1,11 @@
 """
 Scanner — runs one full scan cycle for a given exchange + symbol list.
-Called by the scheduler every 15 minutes.
+Called by the scheduler every 5 minutes.
 """
 import logging
 from typing import Callable, Awaitable
 
-from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, MIN_HOLD_CANDLES
+from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, MIN_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -45,10 +45,19 @@ async def run_scan(
 
         await tm.increment_candles(market, symbol)
 
-        latest    = df.iloc[-1]
-        ema_slope = latest["ema50"] - df.iloc[-6]["ema50"]
-        position  = open_positions.get(symbol)
-        price     = float(latest["close"])
+        latest   = df.iloc[-1]
+        position = open_positions.get(symbol)
+        price    = float(latest["close"])
+        pos_side = position.get("side", "long") if position else None
+
+        # ── Multi-Timeframe: 1h trend filter ─────────────────────────────────
+        trend_df   = await exchange.fetch_trend_bars(symbol)
+        trend_up   = False
+        trend_down = False
+        if trend_df is not None and len(trend_df) >= 6:
+            h1_slope   = float(trend_df.iloc[-1]["ema50"]) - float(trend_df.iloc[-6]["ema50"])
+            trend_up   = h1_slope > 0
+            trend_down = h1_slope < 0
 
         # ── Exit path ─────────────────────────────────────────────────────────
         if position:
@@ -69,7 +78,7 @@ async def run_scan(
                             await notify(msg)
                 continue
 
-            # LLM sell signal
+            # LLM exit signal
             if candles_held >= MIN_HOLD_CANDLES:
                 sentiment_block = build_sentiment_block(symbol)
                 prompt  = build_prompt(symbol, df, sentiment_block, position, mkt_str)
@@ -77,18 +86,25 @@ async def run_scan(
                 signal  = result.get("signal", "hold")
                 conf    = float(result.get("confidence", 0.0))
                 reason  = result.get("reason", "")
-                logger.info("[Scanner/%s] %s (open) → %s conf=%.2f", exchange.name, symbol, signal, conf)
+                logger.info("[Scanner/%s] %s (open %s) → %s conf=%.2f",
+                            exchange.name, symbol, pos_side, signal, conf)
 
-                if signal == "sell" and conf >= SELL_CONFIDENCE:
+                # Short: "buy" closes; Long: "sell" closes
+                exit_triggered = (
+                    (pos_side == "short" and signal == "buy"  and conf >= BUY_CONFIDENCE) or
+                    (pos_side != "short" and signal == "sell" and conf >= SELL_CONFIDENCE)
+                )
+                if exit_triggered:
                     ok = await exchange.close_position(symbol)
                     if ok:
-                        res = await tm.close_position(market, symbol, price, f"llm_sell: {reason}")
+                        close_reason = f"llm_{'buy' if pos_side == 'short' else 'sell'}: {reason}"
+                        res = await tm.close_position(market, symbol, price, close_reason)
                         if res:
-                            sign = "+" if res["pl_pct"] >= 0 else ""
-                            pl   = float(position.get("unrealized_pl", res["pl_abs"]))
-                            msg  = (f"📤 *{exchange.name.capitalize()} Verkauf*\n"
-                                    f"`{symbol}` {sign}{res['pl_pct']:.2f}% ({sign}${pl:.2f})\n"
-                                    f"Grund: {reason}")
+                            sign  = "+" if res["pl_pct"] >= 0 else ""
+                            label = "Short-Exit" if pos_side == "short" else "Verkauf"
+                            msg   = (f"📤 *{exchange.name.capitalize()} {label}*\n"
+                                     f"`{symbol}` {sign}{res['pl_pct']:.2f}% ({sign}${res['pl_abs']:.2f})\n"
+                                     f"Grund: {reason}")
                             actions.append(msg)
                             if notify:
                                 await notify(msg)
@@ -97,12 +113,19 @@ async def run_scan(
         # ── Entry path ────────────────────────────────────────────────────────
         if open_count >= max_positions:
             continue
-        if ema_slope < 0:
-            logger.info("[Scanner/%s] %s — Entry blockiert (EMA50 abwärts)", exchange.name, symbol)
-            continue
+
         blocked, block_reason = should_block_entry(symbol)
         if blocked:
             logger.info("[Scanner/%s] %s — Entry blockiert: %s", exchange.name, symbol, block_reason)
+            continue
+
+        # Longs need 1h uptrend; shorts need 1h downtrend + KRAKEN_ALLOW_SHORTS
+        allow_long  = trend_up   or trend_df is None
+        allow_short = (trend_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
+
+        if not allow_long and not allow_short:
+            logger.info("[Scanner/%s] %s — Entry blockiert (1h EMA50 seitwärts/neutral)",
+                        exchange.name, symbol)
             continue
 
         sentiment_block = build_sentiment_block(symbol)
@@ -113,12 +136,24 @@ async def run_scan(
         reason  = result.get("reason", "")
         logger.info("[Scanner/%s] %s → %s conf=%.2f", exchange.name, symbol, signal, conf)
 
-        if signal == "buy" and conf >= BUY_CONFIDENCE:
+        if signal == "buy" and conf >= BUY_CONFIDENCE and allow_long:
             order = await exchange.place_order(symbol, Side.BUY, stake_amount)
             if order:
                 open_count += 1
-                await tm.open_position(market, symbol, order.price, order.qty)
-                msg = (f"🟢 *{exchange.name.capitalize()} Kauf*\n"
+                await tm.open_position(market, symbol, order.price, order.qty, side="long")
+                msg = (f"🟢 *{exchange.name.capitalize()} Long*\n"
+                       f"`{symbol}` @ ~{order.price:.4f}\n"
+                       f"Einsatz: {stake_amount} | Conf: {conf:.2f}\nGrund: {reason}")
+                actions.append(msg)
+                if notify:
+                    await notify(msg)
+
+        elif signal == "sell" and conf >= SELL_CONFIDENCE and allow_short:
+            order = await exchange.place_order(symbol, Side.SELL, stake_amount, short=True)
+            if order:
+                open_count += 1
+                await tm.open_position(market, symbol, order.price, order.qty, side="short")
+                msg = (f"🔴 *{exchange.name.capitalize()} Short*\n"
                        f"`{symbol}` @ ~{order.price:.4f}\n"
                        f"Einsatz: {stake_amount} | Conf: {conf:.2f}\nGrund: {reason}")
                 actions.append(msg)

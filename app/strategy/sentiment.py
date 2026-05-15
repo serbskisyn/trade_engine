@@ -251,20 +251,63 @@ def get_coin_news(pair: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 4. Binance Funding Rate (kostenlos, kein Key nötig)
+# ---------------------------------------------------------------------------
+
+def get_funding_rate(pair: str = "BTCUSDT") -> dict:
+    """
+    Holt die aktuelle Perpetual Funding Rate von Binance.
+    Positiv = Markt bullish/überkauft, Negativ = bearish/überverkauft.
+    Extremwerte: >0.05% pro 8h = stark überkauft, <-0.01% = überverkauft.
+    """
+    def _fetch():
+        try:
+            r = requests.get(
+                "https://fapi.binance.com/fapi/v1/premiumIndex",
+                params={"symbol": pair},
+                timeout=8,
+            )
+            r.raise_for_status()
+            d = r.json()
+            rate = float(d.get("lastFundingRate", 0))
+            if rate > 0.0005:
+                signal = "strongly_bullish"
+            elif rate > 0.0001:
+                signal = "bullish"
+            elif rate < -0.0001:
+                signal = "bearish"
+            else:
+                signal = "neutral"
+            return {"rate": rate, "rate_pct": round(rate * 100, 4), "signal": signal}
+        except Exception as e:
+            logger.warning("Funding rate fetch failed for %s: %s", pair, e)
+            return {"rate": 0.0, "rate_pct": 0.0, "signal": "neutral"}
+
+    return _cached(f"funding_{pair}", 900, _fetch)
+
+
+# ---------------------------------------------------------------------------
 # Kompakt-Zusammenfassung für LLM-Prompt
 # ---------------------------------------------------------------------------
 
 def build_sentiment_block(pair: str) -> str:
     """Gibt einen formatierten Sentiment-Block für den LLM-Prompt zurück."""
-    fg   = get_fear_greed()
-    macro = get_polymarket_macro()
+    fg          = get_fear_greed()
+    macro       = get_polymarket_macro()
     coin_market = get_polymarket_coin(pair)
-    news = get_coin_news(pair)
+    news        = get_coin_news(pair)
+    funding     = get_funding_rate("BTCUSDT")
 
     lines = ["=== MARKT-KONTEXT ==="]
 
     # Fear & Greed
     lines.append(f"Fear & Greed: {fg['value']}/100 — {fg['label']} [{fg['signal']}]")
+
+    # BTC Funding Rate
+    lines.append(
+        f"BTC Funding Rate (8h): {funding['rate_pct']:+.4f}% [{funding['signal']}]"
+        f"  {'⚠️ Überkauft' if funding['signal'] == 'strongly_bullish' else ''}"
+    )
 
     # Polymarket Makro
     lines.append(f"Polymarket Makro-Risiko: {macro['risk'].upper()}")

@@ -16,18 +16,21 @@ SYSTEM_PROMPT = """Du bist ein erfahrener Trader. Erkenne TRENDUMKEHRPUNKTE und 
 Antworte NUR mit validem JSON:
 {"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "kurze Begründung"}
 
-KAUF nur bei:
+KAUF (Long eröffnen / Short schließen) nur bei:
 - RSI war unter 38, dreht jetzt aufwärts (min. 2 Kerzen)
 - EMA20 kreuzt EMA50 von unten nach oben
 - Preis berührt unteres Bollinger-Band und schließt darüber zurück
+- MACD-Histogramm dreht von negativ → positiv (Bullish Crossover)
 
-VERKAUF nur bei:
+VERKAUF (Long schließen / Short eröffnen) nur bei:
 - RSI war über 65, dreht jetzt abwärts
 - EMA20 kreuzt EMA50 von oben nach unten
 - Preis schließt unterhalb des oberen Bollinger-Bands zurück
+- MACD-Histogramm dreht von positiv → negativ (Bearish Crossover)
 
-Berücksichtige Marktkontext (Fear&Greed, Polymarket, News) aus dem Prompt.
-Confidence unter 0.70: immer "hold".
+SHORT-LOGIK: "sell" ohne offene Position = Short öffnen. "buy" bei offener Short-Position = Short schließen.
+Berücksichtige Marktkontext (Fear&Greed, Polymarket, News, Funding Rate) aus dem Prompt.
+Confidence unter 0.65: immer "hold".
 """
 
 
@@ -41,34 +44,47 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
         f"O:{row['open']:.4f} H:{row['high']:.4f} L:{row['low']:.4f} C:{row['close']:.4f} "
         f"V:{row['volume']:.0f} | "
         f"RSI:{row['rsi']:.1f} EMA20:{row['ema20']:.4f} EMA50:{row['ema50']:.4f} "
-        f"BB_u:{row['bb_upper']:.4f} BB_l:{row['bb_lower']:.4f}"
+        f"BB_u:{row['bb_upper']:.4f} BB_l:{row['bb_lower']:.4f} "
+        f"MACD:{row['macd']:.5f} Sig:{row['macd_sig']:.5f} Hist:{row['macd_hist']:.5f}"
         for _, row in last.iterrows()
     ]
 
     slope_20  = latest["close"] - last.iloc[-20]["close"]
     rsi_slope = latest["rsi"] - last.iloc[-3]["rsi"]
     ema_slope = latest["ema50"] - last.iloc[-6]["ema50"]
+    macd_dir  = "steigend" if float(latest["macd_hist"]) > float(last.iloc[-2]["macd_hist"]) else "fallend"
 
     pos_ctx = ""
     if position:
-        entry  = float(position["avg_entry_price"])
-        pl_pct = (latest["close"] - entry) / entry * 100
-        sign   = "+" if pl_pct >= 0 else ""
-        pos_ctx = (
-            f"\nOFFENE POSITION: Einstieg {entry:.4f} | "
-            f"Aktuell {sign}{pl_pct:.2f}% | Qty: {position['qty']} | "
-            f"Bewerte ob VERKAUFT werden soll."
-        )
+        entry    = float(position.get("entry_price", position.get("avg_entry_price", 0)))
+        pos_side = position.get("side", "long")
+        if pos_side == "short":
+            pl_pct = (entry - latest["close"]) / entry * 100
+            sign   = "+" if pl_pct >= 0 else ""
+            pos_ctx = (
+                f"\nOFFENE SHORT-POSITION: Einstieg {entry:.4f} | "
+                f"Aktuell {sign}{pl_pct:.2f}% | Qty: {position.get('qty', '?')} | "
+                f"'buy'-Signal → Short schließen."
+            )
+        else:
+            pl_pct = (latest["close"] - entry) / entry * 100
+            sign   = "+" if pl_pct >= 0 else ""
+            pos_ctx = (
+                f"\nOFFENE LONG-POSITION: Einstieg {entry:.4f} | "
+                f"Aktuell {sign}{pl_pct:.2f}% | Qty: {position.get('qty', '?')} | "
+                f"Bewerte ob VERKAUFT werden soll."
+            )
 
     tz_label = "ET" if market == "US" else "UTC"
     now_str  = datetime.now(ET if market == "US" else None).strftime("%Y-%m-%d %H:%M")
 
     return (
-        f"Symbol: {symbol} | Timeframe: 15m | {now_str} {tz_label}\n"
+        f"Symbol: {symbol} | Timeframe: 5m | {now_str} {tz_label}\n"
         f"Trend (20 Kerzen): {'aufwärts' if slope_20 > 0 else 'abwärts'} | "
         f"RSI: {'steigend' if rsi_slope > 0 else 'fallend'} ({latest['rsi']:.1f}) | "
         f"EMA20 {'>' if latest['ema20'] > latest['ema50'] else '<'} EMA50 | "
-        f"EMA50-Slope: {'aufwärts' if ema_slope > 0 else 'abwärts'}"
+        f"EMA50-Slope: {'aufwärts' if ema_slope > 0 else 'abwärts'} | "
+        f"MACD-Hist: {macd_dir} ({latest['macd_hist']:.5f})"
         f"{pos_ctx}\n\n"
         f"{sentiment_block}\n\n"
         f"Letzte 50 Kerzen (älteste zuerst):\n"

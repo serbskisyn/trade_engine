@@ -59,16 +59,19 @@ async def _db() -> aiosqlite.Connection:
 
 # ── Position CRUD ─────────────────────────────────────────────────────────────
 
-async def open_position(market: Market, symbol: str, entry_price: float, qty: float) -> None:
+async def open_position(market: Market, symbol: str, entry_price: float, qty: float,
+                        side: str = "long") -> None:
     conn = await _db()
     try:
         await conn.execute("""
             INSERT OR REPLACE INTO positions
               (market, symbol, side, entry_price, qty, peak_price, trailing_active, opened_at, candles_held)
-            VALUES (?, ?, 'buy', ?, ?, ?, 0, ?, 0)
-        """, (market, symbol, entry_price, qty, entry_price, datetime.now(timezone.utc).isoformat()))
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0)
+        """, (market, symbol, side, entry_price, qty, entry_price,
+               datetime.now(timezone.utc).isoformat()))
         await conn.commit()
-        logger.info("[TradeManager] Opened %s %s @ %.4f qty=%.4f", market, symbol, entry_price, qty)
+        logger.info("[TradeManager] Opened %s %s %s @ %.4f qty=%.4f",
+                    side.upper(), market, symbol, entry_price, qty)
     finally:
         await conn.close()
 
@@ -77,25 +80,33 @@ async def close_position(market: Market, symbol: str, exit_price: float, reason:
     conn = await _db()
     try:
         async with conn.execute(
-            "SELECT entry_price, qty FROM positions WHERE market=? AND symbol=?", (market, symbol)
+            "SELECT entry_price, qty, side FROM positions WHERE market=? AND symbol=?",
+            (market, symbol)
         ) as cur:
             row = await cur.fetchone()
         if not row:
             return None
-        entry_price, qty = row
-        pl_abs = (exit_price - entry_price) * qty
-        pl_pct = (exit_price - entry_price) / entry_price * 100
+        entry_price, qty, pos_side = row
+
+        # P&L depends on direction
+        if pos_side == "short":
+            pl_abs = (entry_price - exit_price) * qty
+            pl_pct = (entry_price - exit_price) / entry_price * 100
+        else:
+            pl_abs = (exit_price - entry_price) * qty
+            pl_pct = (exit_price - entry_price) / entry_price * 100
 
         await conn.execute("""
             INSERT INTO trade_log (market, symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at)
-            VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?)
-        """, (market, symbol, entry_price, exit_price, qty, pl_pct, pl_abs, reason,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (market, symbol, pos_side, entry_price, exit_price, qty, pl_pct, pl_abs, reason,
                datetime.now(timezone.utc).isoformat()))
         await conn.execute("DELETE FROM positions WHERE market=? AND symbol=?", (market, symbol))
         await conn.commit()
-        logger.info("[TradeManager] Closed %s %s @ %.4f | P&L: %+.2f%% reason=%s",
-                    market, symbol, exit_price, pl_pct, reason)
-        return {"symbol": symbol, "pl_pct": pl_pct, "pl_abs": pl_abs, "reason": reason}
+        logger.info("[TradeManager] Closed %s %s %s @ %.4f | P&L: %+.2f%% reason=%s",
+                    pos_side.upper(), market, symbol, exit_price, pl_pct, reason)
+        return {"symbol": symbol, "pl_pct": pl_pct, "pl_abs": pl_abs,
+                "reason": reason, "side": pos_side}
     finally:
         await conn.close()
 
@@ -154,32 +165,39 @@ async def update_peak(market: Market, symbol: str, current_price: float) -> None
 
 async def check_stops(market: Market, symbol: str, current_price: float,
                       candles_held: int) -> tuple[bool, str]:
-    """Returns (should_close, reason). Also updates peak/trailing state."""
+    """Returns (should_close, reason). Side-aware: long and short handled separately."""
     conn = await _db()
     try:
         async with conn.execute(
-            "SELECT entry_price, peak_price, trailing_active, candles_held FROM positions WHERE market=? AND symbol=?",
+            "SELECT entry_price, peak_price, trailing_active, candles_held, side FROM positions WHERE market=? AND symbol=?",
             (market, symbol)
         ) as cur:
             row = await cur.fetchone()
         if not row:
             return False, ""
-        entry_price, peak_price, trailing_active, db_candles = row
+        entry_price, peak_price, trailing_active, db_candles, pos_side = row
 
-        # update peak & trailing flag
         await update_peak(market, symbol, current_price)
 
-        loss_pct = (entry_price - current_price) / entry_price
-
-        # Hard stop-loss
-        if loss_pct >= STOP_LOSS_PCT:
-            return True, f"stop_loss ({loss_pct*100:.2f}%)"
-
-        # Trailing stop
-        if trailing_active and peak_price > 0:
-            drop_from_peak = (peak_price - current_price) / peak_price
-            if drop_from_peak >= TRAILING_TRAIL_PCT:
-                return True, f"trailing_stop (peak={peak_price:.4f}, drop={drop_from_peak*100:.2f}%)"
+        if pos_side == "short":
+            # Short: loss = price went UP from entry
+            loss_pct = (current_price - entry_price) / entry_price
+            if loss_pct >= STOP_LOSS_PCT:
+                return True, f"stop_loss_short ({loss_pct*100:.2f}%)"
+            # Trailing for short: peak_price = lowest price seen
+            if trailing_active and peak_price > 0:
+                rise_from_trough = (current_price - peak_price) / peak_price
+                if rise_from_trough >= TRAILING_TRAIL_PCT:
+                    return True, f"trailing_stop_short (trough={peak_price:.4f}, rise={rise_from_trough*100:.2f}%)"
+        else:
+            # Long: loss = price went DOWN from entry
+            loss_pct = (entry_price - current_price) / entry_price
+            if loss_pct >= STOP_LOSS_PCT:
+                return True, f"stop_loss ({loss_pct*100:.2f}%)"
+            if trailing_active and peak_price > 0:
+                drop_from_peak = (peak_price - current_price) / peak_price
+                if drop_from_peak >= TRAILING_TRAIL_PCT:
+                    return True, f"trailing_stop (peak={peak_price:.4f}, drop={drop_from_peak*100:.2f}%)"
 
         return False, ""
     finally:
