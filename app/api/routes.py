@@ -54,6 +54,12 @@ async def status(x_api_secret: str = Header(default="")):
         },
         "stats": stats,
     }
+    if KRAKEN_API_KEY:
+        try:
+            from app.exchanges.kraken import KrakenExchange
+            result["crypto"]["account"] = KrakenExchange().get_account_info()
+        except Exception:
+            pass
     if ALPACA_API_KEY:
         try:
             from app.exchanges.alpaca import AlpacaExchange
