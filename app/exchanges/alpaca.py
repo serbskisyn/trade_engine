@@ -30,7 +30,7 @@ class AlpacaExchange(BaseExchange):
 
     async def fetch_bars(self, symbol: str, limit: int = 100) -> pd.DataFrame | None:
         try:
-            req  = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute * 15, limit=limit)
+            req  = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute * 5, limit=limit)
             bars = self._data.get_stock_bars(req)
             df   = bars.df
             if hasattr(df.index, "levels"):
@@ -87,6 +87,16 @@ class AlpacaExchange(BaseExchange):
         except Exception as e:
             logger.warning("Alpaca close_position failed for %s: %s", symbol, e)
             return False
+
+    async def get_current_price(self, symbol: str) -> float | None:
+        try:
+            from alpaca.data.requests import StockLatestBarRequest
+            req  = StockLatestBarRequest(symbol_or_symbols=symbol)
+            bars = self._data.get_stock_latest_bar(req)
+            return float(bars[symbol].close)
+        except Exception as e:
+            logger.warning("Alpaca get_current_price failed for %s: %s", symbol, e)
+            return None
 
     def get_account_info(self) -> dict:
         try:

@@ -12,11 +12,12 @@ from app.config import (
     ALPACA_API_KEY, ALPACA_SYMBOLS, ALPACA_STAKE_USD, ALPACA_MAX_POSITIONS,
 )
 from app.engine.scanner import run_scan, Notifier
+from app.engine.price_monitor import price_monitor_loop
 
 logger = logging.getLogger(__name__)
 
 ET  = ZoneInfo("America/New_York")
-_SCAN_INTERVAL = 15 * 60  # 15 minutes in seconds
+_SCAN_INTERVAL = 5 * 60  # 5 minutes in seconds
 
 _STOCK_OPEN  = time(10, 0)
 _STOCK_CLOSE = time(15, 45)
@@ -34,7 +35,7 @@ async def _crypto_loop(notify: Notifier | None) -> None:
         return
     from app.exchanges.kraken import KrakenExchange
     exchange = KrakenExchange()
-    logger.info("Crypto-Loop gestartet (alle 15 Min, 24/7)")
+    logger.info("Crypto-Loop gestartet (alle 5 Min, 24/7)")
     while True:
         try:
             actions = await run_scan(exchange, KRAKEN_PAIRS, KRAKEN_STAKE_AMOUNT,
@@ -52,7 +53,7 @@ async def _stocks_loop(notify: Notifier | None) -> None:
         return
     from app.exchanges.alpaca import AlpacaExchange
     exchange = AlpacaExchange()
-    logger.info("Stocks-Loop gestartet (Mo–Fr 10:00–15:45 ET, alle 15 Min)")
+    logger.info("Stocks-Loop gestartet (Mo–Fr 10:00–15:45 ET, alle 5 Min)")
     while True:
         if _stocks_window_open():
             try:
@@ -66,9 +67,10 @@ async def _stocks_loop(notify: Notifier | None) -> None:
 
 
 def start(notify: Notifier | None = None) -> list[asyncio.Task]:
-    """Start both scan loops as asyncio tasks. Call from within a running event loop."""
+    """Start scan loops + price monitor as asyncio tasks."""
     tasks = [
-        asyncio.create_task(_crypto_loop(notify), name="crypto_loop"),
-        asyncio.create_task(_stocks_loop(notify),  name="stocks_loop"),
+        asyncio.create_task(_crypto_loop(notify),       name="crypto_loop"),
+        asyncio.create_task(_stocks_loop(notify),        name="stocks_loop"),
+        asyncio.create_task(price_monitor_loop(notify),  name="price_monitor"),
     ]
     return tasks

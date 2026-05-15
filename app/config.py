@@ -19,7 +19,8 @@ KRAKEN_MAX_POSITIONS: int   = int(os.getenv("KRAKEN_MAX_POSITIONS", "5"))
 KRAKEN_PAIRS: list[str] = [
     p.strip() for p in os.getenv(
         "KRAKEN_PAIRS",
-        "ETH/BTC,SOL/BTC,XRP/BTC,ADA/BTC,LTC/BTC,LINK/BTC,DOT/BTC,ATOM/BTC,DOGE/BTC,XLM/BTC"
+        "ETH/BTC,SOL/BTC,XRP/BTC,ADA/BTC,LTC/BTC,LINK/BTC,DOT/BTC,ATOM/BTC,DOGE/BTC,XLM/BTC,"
+        "AVAX/BTC,NEAR/BTC,UNI/BTC,AAVE/BTC,MATIC/BTC"
     ).split(",") if p.strip()
 ]
 
@@ -31,7 +32,8 @@ ALPACA_STAKE_USD:     float = float(os.getenv("ALPACA_STAKE_USD", "10"))
 ALPACA_MAX_POSITIONS: int   = int(os.getenv("ALPACA_MAX_POSITIONS", "3"))
 ALPACA_SYMBOLS: list[str] = [
     s.strip() for s in os.getenv(
-        "ALPACA_SYMBOLS", "SPY,QQQ,GLD,AAPL,MSFT,NVDA,TSLA,XLF,USO"
+        "ALPACA_SYMBOLS",
+        "SPY,QQQ,GLD,AAPL,MSFT,NVDA,TSLA,XLF,USO,AMZN,GOOGL,META,AMD,JPM,IWM"
     ).split(",") if s.strip()
 ]
 

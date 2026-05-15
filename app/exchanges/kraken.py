@@ -26,7 +26,7 @@ class KrakenExchange(BaseExchange):
 
     async def fetch_bars(self, symbol: str, limit: int = 100) -> pd.DataFrame | None:
         try:
-            ohlcv = self._ex.fetch_ohlcv(symbol, timeframe="15m", limit=limit)
+            ohlcv = self._ex.fetch_ohlcv(symbol, timeframe="5m", limit=limit)
             if len(ohlcv) < 60:
                 return None
             df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -91,6 +91,14 @@ class KrakenExchange(BaseExchange):
         except Exception as e:
             logger.warning("Kraken close_position failed for %s: %s", symbol, e)
             return False
+
+    async def get_current_price(self, symbol: str) -> float | None:
+        try:
+            ticker = self._ex.fetch_ticker(symbol)
+            return float(ticker["last"])
+        except Exception as e:
+            logger.warning("Kraken get_current_price failed for %s: %s", symbol, e)
+            return None
 
     def get_account_info(self) -> dict:
         try:

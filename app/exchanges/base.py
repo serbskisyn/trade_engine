@@ -41,4 +41,8 @@ class BaseExchange(ABC):
     async def close_position(self, symbol: str) -> bool: ...
 
     @abstractmethod
+    async def get_current_price(self, symbol: str) -> float | None:
+        """Cheap single-price fetch — no bars, no indicators. Used by price monitor."""
+
+    @abstractmethod
     def get_account_info(self) -> dict: ...
