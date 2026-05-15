@@ -1,0 +1,16 @@
+[Unit]
+Description=Trade Engine — Unified Crypto + US-Stocks Trading Service
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/trade_engine
+ExecStart=/home/pi/trade_engine/.venv/bin/python -m app.main
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/pi/trade_engine/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

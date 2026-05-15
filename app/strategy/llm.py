@@ -1,0 +1,102 @@
+import json
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import httpx
+import pandas as pd
+
+from app.config import OPENROUTER_API_KEY, OPENROUTER_MODEL
+
+logger = logging.getLogger(__name__)
+ET = ZoneInfo("America/New_York")
+
+SYSTEM_PROMPT = """Du bist ein erfahrener Trader. Erkenne TRENDUMKEHRPUNKTE und MOMENTUM-ÄNDERUNGEN.
+
+Antworte NUR mit validem JSON:
+{"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "kurze Begründung"}
+
+KAUF nur bei:
+- RSI war unter 38, dreht jetzt aufwärts (min. 2 Kerzen)
+- EMA20 kreuzt EMA50 von unten nach oben
+- Preis berührt unteres Bollinger-Band und schließt darüber zurück
+
+VERKAUF nur bei:
+- RSI war über 65, dreht jetzt abwärts
+- EMA20 kreuzt EMA50 von oben nach unten
+- Preis schließt unterhalb des oberen Bollinger-Bands zurück
+
+Berücksichtige Marktkontext (Fear&Greed, Polymarket, News) aus dem Prompt.
+Confidence unter 0.70: immer "hold".
+"""
+
+
+def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
+                 position: dict | None, market: str = "US") -> str:
+    last   = df.tail(50)
+    latest = last.iloc[-1]
+
+    candles = [
+        f"{row['timestamp'].strftime('%Y-%m-%d %H:%M')} | "
+        f"O:{row['open']:.4f} H:{row['high']:.4f} L:{row['low']:.4f} C:{row['close']:.4f} "
+        f"V:{row['volume']:.0f} | "
+        f"RSI:{row['rsi']:.1f} EMA20:{row['ema20']:.4f} EMA50:{row['ema50']:.4f} "
+        f"BB_u:{row['bb_upper']:.4f} BB_l:{row['bb_lower']:.4f}"
+        for _, row in last.iterrows()
+    ]
+
+    slope_20  = latest["close"] - last.iloc[-20]["close"]
+    rsi_slope = latest["rsi"] - last.iloc[-3]["rsi"]
+    ema_slope = latest["ema50"] - last.iloc[-6]["ema50"]
+
+    pos_ctx = ""
+    if position:
+        entry  = float(position["avg_entry_price"])
+        pl_pct = (latest["close"] - entry) / entry * 100
+        sign   = "+" if pl_pct >= 0 else ""
+        pos_ctx = (
+            f"\nOFFENE POSITION: Einstieg {entry:.4f} | "
+            f"Aktuell {sign}{pl_pct:.2f}% | Qty: {position['qty']} | "
+            f"Bewerte ob VERKAUFT werden soll."
+        )
+
+    tz_label = "ET" if market == "US" else "UTC"
+    now_str  = datetime.now(ET if market == "US" else None).strftime("%Y-%m-%d %H:%M")
+
+    return (
+        f"Symbol: {symbol} | Timeframe: 15m | {now_str} {tz_label}\n"
+        f"Trend (20 Kerzen): {'aufwärts' if slope_20 > 0 else 'abwärts'} | "
+        f"RSI: {'steigend' if rsi_slope > 0 else 'fallend'} ({latest['rsi']:.1f}) | "
+        f"EMA20 {'>' if latest['ema20'] > latest['ema50'] else '<'} EMA50 | "
+        f"EMA50-Slope: {'aufwärts' if ema_slope > 0 else 'abwärts'}"
+        f"{pos_ctx}\n\n"
+        f"{sentiment_block}\n\n"
+        f"Letzte 50 Kerzen (älteste zuerst):\n"
+        + "\n".join(candles)
+        + "\n\nUmkehrsignal vorhanden? Deine Entscheidung:"
+    )
+
+
+async def call_llm(prompt: str) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    "max_tokens": 150,
+                    "temperature": 0.1,
+                },
+            )
+            r.raise_for_status()
+            raw = r.json()["choices"][0]["message"]["content"].strip()
+            return json.loads(raw)
+    except Exception as e:
+        logger.warning("LLM call failed: %s", e)
+        return {"signal": "hold", "confidence": 0.0, "reason": "LLM error"}

@@ -1,0 +1,8 @@
+python-dotenv
+httpx
+pandas
+fastapi
+uvicorn[standard]
+ccxt
+alpaca-py
+aiosqlite
