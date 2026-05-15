@@ -38,8 +38,8 @@ ALPACA_SYMBOLS: list[str] = [
 ]
 
 # ── Strategie ─────────────────────────────────────────────────────────────────
-BUY_CONFIDENCE:  float = float(os.getenv("BUY_CONFIDENCE",  "0.72"))
-SELL_CONFIDENCE: float = float(os.getenv("SELL_CONFIDENCE", "0.72"))
+BUY_CONFIDENCE:  float = float(os.getenv("BUY_CONFIDENCE",  "0.65"))
+SELL_CONFIDENCE: float = float(os.getenv("SELL_CONFIDENCE", "0.65"))
 STOP_LOSS_PCT:   float = float(os.getenv("STOP_LOSS_PCT",   "0.02"))
 TRAILING_ACTIVATE_PCT: float = float(os.getenv("TRAILING_ACTIVATE_PCT", "0.02"))
 TRAILING_TRAIL_PCT:    float = float(os.getenv("TRAILING_TRAIL_PCT",    "0.01"))
