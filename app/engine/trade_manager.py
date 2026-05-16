@@ -22,10 +22,12 @@ Market = Literal["crypto", "stocks"]
 # ── Circuit Breaker state ─────────────────────────────────────────────────────
 _circuit_breaker_reset_until: datetime | None = None
 
+# ── Singleton DB Connection ───────────────────────────────────────────────────
+_conn: aiosqlite.Connection | None = None
+_init_lock = asyncio.Lock()
 
-async def _db() -> aiosqlite.Connection:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = await aiosqlite.connect(DB_PATH)
+
+async def _init_schema(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS positions (
@@ -58,116 +60,122 @@ async def _db() -> aiosqlite.Connection:
         )
     """)
     await conn.commit()
-    return conn
+
+
+async def _get_db() -> aiosqlite.Connection:
+    """Returns the singleton aiosqlite connection. Lazy-initialized + thread-safe."""
+    global _conn
+    if _conn is not None:
+        return _conn
+    async with _init_lock:
+        if _conn is not None:
+            return _conn
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        conn = await aiosqlite.connect(DB_PATH)
+        await _init_schema(conn)
+        _conn = conn
+        return conn
+
+
+async def close_db() -> None:
+    """Closes the singleton connection. Idempotent. Useful for tests + clean shutdown."""
+    global _conn
+    if _conn is not None:
+        await _conn.close()
+        _conn = None
 
 
 # ── Position CRUD ─────────────────────────────────────────────────────────────
 
 async def open_position(market: Market, symbol: str, entry_price: float, qty: float,
                         side: str = "long") -> None:
-    conn = await _db()
-    try:
-        await conn.execute("""
-            INSERT OR REPLACE INTO positions
-              (market, symbol, side, entry_price, qty, peak_price, trailing_active, opened_at, candles_held)
-            VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0)
-        """, (market, symbol, side, entry_price, qty, entry_price,
-               datetime.now(timezone.utc).isoformat()))
-        await conn.commit()
-        logger.info("[TradeManager] Opened %s %s %s @ %.8f qty=%.4f",
-                    side.upper(), market, symbol, entry_price, qty)
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    await conn.execute("""
+        INSERT OR REPLACE INTO positions
+          (market, symbol, side, entry_price, qty, peak_price, trailing_active, opened_at, candles_held)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0)
+    """, (market, symbol, side, entry_price, qty, entry_price,
+           datetime.now(timezone.utc).isoformat()))
+    await conn.commit()
+    logger.info("[TradeManager] Opened %s %s %s @ %.8f qty=%.4f",
+                side.upper(), market, symbol, entry_price, qty)
 
 
 async def close_position(market: Market, symbol: str, exit_price: float, reason: str) -> dict | None:
-    conn = await _db()
-    try:
-        async with conn.execute(
-            "SELECT entry_price, qty, side FROM positions WHERE market=? AND symbol=?",
-            (market, symbol)
-        ) as cur:
-            row = await cur.fetchone()
-        if not row:
-            return None
-        entry_price, qty, pos_side = row
+    conn = await _get_db()
+    async with conn.execute(
+        "SELECT entry_price, qty, side FROM positions WHERE market=? AND symbol=?",
+        (market, symbol)
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return None
+    entry_price, qty, pos_side = row
 
-        # P&L depends on direction
-        if pos_side == "short":
-            pl_abs = (entry_price - exit_price) * qty
-            pl_pct = (entry_price - exit_price) / entry_price * 100
-        else:
-            pl_abs = (exit_price - entry_price) * qty
-            pl_pct = (exit_price - entry_price) / entry_price * 100
+    if pos_side == "short":
+        pl_abs = (entry_price - exit_price) * qty
+        pl_pct = (entry_price - exit_price) / entry_price * 100
+    else:
+        pl_abs = (exit_price - entry_price) * qty
+        pl_pct = (exit_price - entry_price) / entry_price * 100
 
-        await conn.execute("""
-            INSERT INTO trade_log (market, symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (market, symbol, pos_side, entry_price, exit_price, qty, pl_pct, pl_abs, reason,
-               datetime.now(timezone.utc).isoformat()))
-        await conn.execute("DELETE FROM positions WHERE market=? AND symbol=?", (market, symbol))
-        await conn.commit()
-        logger.info("[TradeManager] Closed %s %s %s @ %.8f | P&L: %+.2f%% reason=%s",
-                    pos_side.upper(), market, symbol, exit_price, pl_pct, reason)
-        return {"symbol": symbol, "pl_pct": pl_pct, "pl_abs": pl_abs,
-                "reason": reason, "side": pos_side}
-    finally:
-        await conn.close()
+    await conn.execute("""
+        INSERT INTO trade_log (market, symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (market, symbol, pos_side, entry_price, exit_price, qty, pl_pct, pl_abs, reason,
+           datetime.now(timezone.utc).isoformat()))
+    await conn.execute("DELETE FROM positions WHERE market=? AND symbol=?", (market, symbol))
+    await conn.commit()
+    logger.info("[TradeManager] Closed %s %s %s @ %.8f | P&L: %+.2f%% reason=%s",
+                pos_side.upper(), market, symbol, exit_price, pl_pct, reason)
+    return {"symbol": symbol, "pl_pct": pl_pct, "pl_abs": pl_abs,
+            "reason": reason, "side": pos_side}
 
 
 async def get_open_positions(market: Market | None = None) -> list[dict]:
-    conn = await _db()
-    try:
-        query  = "SELECT * FROM positions"
-        params: tuple = ()
-        if market:
-            query  += " WHERE market=?"
-            params  = (market,)
-        async with conn.execute(query, params) as cur:
-            cols = [d[0] for d in cur.description]
-            rows = await cur.fetchall()
-        return [dict(zip(cols, r)) for r in rows]
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    query  = "SELECT * FROM positions"
+    params: tuple = ()
+    if market:
+        query  += " WHERE market=?"
+        params  = (market,)
+    async with conn.execute(query, params) as cur:
+        cols = [d[0] for d in cur.description]
+        rows = await cur.fetchall()
+    return [dict(zip(cols, r)) for r in rows]
 
 
 async def increment_candles(market: Market, symbol: str) -> None:
-    conn = await _db()
-    try:
-        await conn.execute(
-            "UPDATE positions SET candles_held = candles_held + 1 WHERE market=? AND symbol=?",
-            (market, symbol)
-        )
-        await conn.commit()
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    await conn.execute(
+        "UPDATE positions SET candles_held = candles_held + 1 WHERE market=? AND symbol=?",
+        (market, symbol)
+    )
+    await conn.commit()
 
 
 async def update_peak(market: Market, symbol: str, current_price: float) -> None:
-    conn = await _db()
-    try:
-        async with conn.execute(
-            "SELECT peak_price, entry_price, side FROM positions WHERE market=? AND symbol=?",
-            (market, symbol)
-        ) as cur:
-            row = await cur.fetchone()
-        if not row:
-            return
-        peak_price, entry_price, pos_side = row
-        if pos_side == "short":
-            # For shorts: peak_price tracks the trough (minimum seen)
-            trailing_active = int((entry_price - current_price) / entry_price >= TRAILING_ACTIVATE_PCT)
-            new_peak        = min(peak_price, current_price)
-        else:
-            trailing_active = int((current_price - entry_price) / entry_price >= TRAILING_ACTIVATE_PCT)
-            new_peak        = max(peak_price, current_price)
-        await conn.execute(
-            "UPDATE positions SET peak_price=?, trailing_active=? WHERE market=? AND symbol=?",
-            (new_peak, trailing_active, market, symbol)
-        )
-        await conn.commit()
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    async with conn.execute(
+        "SELECT peak_price, entry_price, side FROM positions WHERE market=? AND symbol=?",
+        (market, symbol)
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return
+    peak_price, entry_price, pos_side = row
+    if pos_side == "short":
+        # For shorts: peak_price tracks the trough (minimum seen)
+        trailing_active = int((entry_price - current_price) / entry_price >= TRAILING_ACTIVATE_PCT)
+        new_peak        = min(peak_price, current_price)
+    else:
+        trailing_active = int((current_price - entry_price) / entry_price >= TRAILING_ACTIVATE_PCT)
+        new_peak        = max(peak_price, current_price)
+    await conn.execute(
+        "UPDATE positions SET peak_price=?, trailing_active=? WHERE market=? AND symbol=?",
+        (new_peak, trailing_active, market, symbol)
+    )
+    await conn.commit()
 
 
 # ── Stop-Loss / Trailing-Stop Check ──────────────────────────────────────────
@@ -175,79 +183,67 @@ async def update_peak(market: Market, symbol: str, current_price: float) -> None
 async def check_stops(market: Market, symbol: str, current_price: float,
                       candles_held: int) -> tuple[bool, str]:
     """Returns (should_close, reason). Side-aware: long and short handled separately."""
-    conn = await _db()
-    try:
-        async with conn.execute(
-            "SELECT entry_price, peak_price, trailing_active, candles_held, side FROM positions WHERE market=? AND symbol=?",
-            (market, symbol)
-        ) as cur:
-            row = await cur.fetchone()
-        if not row:
-            return False, ""
-        entry_price, peak_price, trailing_active, db_candles, pos_side = row
-
-        await update_peak(market, symbol, current_price)
-
-        if pos_side == "short":
-            # Short: loss = price went UP from entry
-            loss_pct = (current_price - entry_price) / entry_price
-            if loss_pct >= STOP_LOSS_PCT:
-                return True, f"stop_loss_short ({loss_pct*100:.2f}%)"
-            # Trailing for short: peak_price = lowest price seen
-            if trailing_active and peak_price > 0:
-                rise_from_trough = (current_price - peak_price) / peak_price
-                if rise_from_trough >= TRAILING_TRAIL_PCT:
-                    return True, f"trailing_stop_short (trough={peak_price:.4f}, rise={rise_from_trough*100:.2f}%)"
-        else:
-            # Long: loss = price went DOWN from entry
-            loss_pct = (entry_price - current_price) / entry_price
-            if loss_pct >= STOP_LOSS_PCT:
-                return True, f"stop_loss ({loss_pct*100:.2f}%)"
-            if trailing_active and peak_price > 0:
-                drop_from_peak = (peak_price - current_price) / peak_price
-                if drop_from_peak >= TRAILING_TRAIL_PCT:
-                    return True, f"trailing_stop (peak={peak_price:.4f}, drop={drop_from_peak*100:.2f}%)"
-
+    conn = await _get_db()
+    async with conn.execute(
+        "SELECT entry_price, peak_price, trailing_active, candles_held, side FROM positions WHERE market=? AND symbol=?",
+        (market, symbol)
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
         return False, ""
-    finally:
-        await conn.close()
+    entry_price, peak_price, trailing_active, db_candles, pos_side = row
+
+    await update_peak(market, symbol, current_price)
+
+    if pos_side == "short":
+        loss_pct = (current_price - entry_price) / entry_price
+        if loss_pct >= STOP_LOSS_PCT:
+            return True, f"stop_loss_short ({loss_pct*100:.2f}%)"
+        if trailing_active and peak_price > 0:
+            rise_from_trough = (current_price - peak_price) / peak_price
+            if rise_from_trough >= TRAILING_TRAIL_PCT:
+                return True, f"trailing_stop_short (trough={peak_price:.4f}, rise={rise_from_trough*100:.2f}%)"
+    else:
+        loss_pct = (entry_price - current_price) / entry_price
+        if loss_pct >= STOP_LOSS_PCT:
+            return True, f"stop_loss ({loss_pct*100:.2f}%)"
+        if trailing_active and peak_price > 0:
+            drop_from_peak = (peak_price - current_price) / peak_price
+            if drop_from_peak >= TRAILING_TRAIL_PCT:
+                return True, f"trailing_stop (peak={peak_price:.4f}, drop={drop_from_peak*100:.2f}%)"
+
+    return False, ""
 
 
 async def get_recent_trades(limit: int = 3) -> list[dict]:
-    conn = await _db()
-    try:
-        async with conn.execute("""
-            SELECT symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at
-            FROM trade_log ORDER BY closed_at DESC LIMIT ?
-        """, (limit,)) as cur:
-            cols = [d[0] for d in cur.description]
-            rows = await cur.fetchall()
-        return [dict(zip(cols, r)) for r in rows]
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    async with conn.execute("""
+        SELECT symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at
+        FROM trade_log ORDER BY closed_at DESC LIMIT ?
+    """, (limit,)) as cur:
+        cols = [d[0] for d in cur.description]
+        rows = await cur.fetchall()
+    return [dict(zip(cols, r)) for r in rows]
 
 
 async def get_trade_stats() -> dict:
-    conn = await _db()
-    try:
-        async with conn.execute("""
-            SELECT COUNT(*), SUM(pl_abs), AVG(pl_pct),
-                   SUM(CASE WHEN pl_abs > 0 THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN pl_abs <= 0 THEN 1 ELSE 0 END)
-            FROM trade_log
-        """) as cur:
-            row = await cur.fetchone()
-        total, total_pl, avg_pct, wins, losses = row
-        return {
-            "total_trades": total or 0,
-            "total_pl":     round(total_pl or 0, 8),
-            "avg_pl_pct":   round(avg_pct or 0, 2),
-            "wins":         wins or 0,
-            "losses":       losses or 0,
-            "win_rate":     round((wins or 0) / max(total or 1, 1) * 100, 1),
-        }
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    async with conn.execute("""
+        SELECT COUNT(*), SUM(pl_abs), AVG(pl_pct),
+               SUM(CASE WHEN pl_abs > 0 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN pl_abs <= 0 THEN 1 ELSE 0 END)
+        FROM trade_log
+    """) as cur:
+        row = await cur.fetchone()
+    total, total_pl, avg_pct, wins, losses = row
+    return {
+        "total_trades": total or 0,
+        "total_pl":     round(total_pl or 0, 8),
+        "avg_pl_pct":   round(avg_pct or 0, 2),
+        "wins":         wins or 0,
+        "losses":       losses or 0,
+        "win_rate":     round((wins or 0) / max(total or 1, 1) * 100, 1),
+    }
 
 
 # ── Circuit Breaker ───────────────────────────────────────────────────────────
@@ -257,21 +253,18 @@ async def check_circuit_breaker() -> tuple[bool, str]:
     global _circuit_breaker_reset_until
     if _circuit_breaker_reset_until and datetime.now(timezone.utc) < _circuit_breaker_reset_until:
         return False, ""
-    conn = await _db()
-    try:
-        async with conn.execute("""
-            SELECT SUM(pl_abs) FROM (
-                SELECT pl_abs FROM trade_log ORDER BY closed_at DESC LIMIT ?
-            )
-        """, (CIRCUIT_BREAKER_WINDOW,)) as cur:
-            row = await cur.fetchone()
-        recent_pl = float(row[0] or 0)
-        if recent_pl < CIRCUIT_BREAKER_MAX_LOSS_BTC:
-            return True, (f"{recent_pl:.6f} BTC Verlust in letzten "
-                          f"{CIRCUIT_BREAKER_WINDOW} Trades (Limit: {CIRCUIT_BREAKER_MAX_LOSS_BTC} BTC)")
-        return False, ""
-    finally:
-        await conn.close()
+    conn = await _get_db()
+    async with conn.execute("""
+        SELECT SUM(pl_abs) FROM (
+            SELECT pl_abs FROM trade_log ORDER BY closed_at DESC LIMIT ?
+        )
+    """, (CIRCUIT_BREAKER_WINDOW,)) as cur:
+        row = await cur.fetchone()
+    recent_pl = float(row[0] or 0)
+    if recent_pl < CIRCUIT_BREAKER_MAX_LOSS_BTC:
+        return True, (f"{recent_pl:.6f} BTC Verlust in letzten "
+                      f"{CIRCUIT_BREAKER_WINDOW} Trades (Limit: {CIRCUIT_BREAKER_MAX_LOSS_BTC} BTC)")
+    return False, ""
 
 
 def reset_circuit_breaker(hours: int = 1) -> None:
