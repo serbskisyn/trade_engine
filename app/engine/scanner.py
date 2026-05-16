@@ -11,7 +11,7 @@ from typing import Callable, Awaitable
 
 import pandas as pd
 
-from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
+from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, EXIT_CONFIDENCE, MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -230,11 +230,11 @@ async def _execute_scan(
                     f" ({pos_side})" if position else "",
                     signal, conf)
 
-        # Exit offener Position
+        # Exit offener Position — EXIT_CONFIDENCE verhindert frühzeitigen Exit
         if position:
             exit_triggered = (
-                (pos_side == "short" and signal == "buy"  and conf >= BUY_CONFIDENCE) or
-                (pos_side != "short" and signal == "sell" and conf >= SELL_CONFIDENCE)
+                (pos_side == "short" and signal == "buy"  and conf >= EXIT_CONFIDENCE) or
+                (pos_side != "short" and signal == "sell" and conf >= EXIT_CONFIDENCE)
             )
             if exit_triggered:
                 ok = await exchange.close_position(symbol, side=pos_side,
