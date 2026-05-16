@@ -28,29 +28,44 @@ _scan_locks: dict[str, asyncio.Lock] = {}
 def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     """
     Fast pre-filter before LLM. Returns (long_candidate, short_candidate).
-    2-of-3 voting: at least 2 indicators must agree. LLM decides the final signal.
-    Volume must exceed 6-bar SMA to confirm signal (no volume = no breakout).
+    Three independent signal paths — any one is sufficient to reach the LLM:
+      Path 1 — Momentum:       2-of-3 voting (RSI, Stoch-K, MACD-crossover) + volume
+      Path 2 — Trend:          EMA20/50 crossover
+      Path 3 — Mean reversion: price touches Bollinger Band
     """
     if len(df) < 3:
         return False, False
     lat  = df.iloc[-1]
     prev = df.iloc[-2]
 
+    # ── Path 1: Momentum (2-of-3 + volume) ───────────────────────────────────
     rsi     = float(lat.get("rsi", 50))
     stoch_k = float(lat["stoch_k"]) if pd.notna(lat.get("stoch_k")) else 50.0
     hist    = float(lat.get("macd_hist", 0))
     p_hist  = float(prev.get("macd_hist", 0))
-
-    # Volume confirmation: current volume >= 80% of 6-bar average
     vol      = float(lat.get("volume", 1))
     vol_sma6 = float(lat.get("vol_sma6", vol)) or vol
     vol_ok   = vol >= vol_sma6 * 0.8
-
-    # 2-of-3: RSI, Stochastic K, MACD histogram crossover
     long_sigs  = [rsi < 45, stoch_k < 25, p_hist < 0 < hist]
     short_sigs = [rsi > 58, stoch_k > 75, p_hist > 0 > hist]
-    long_ok    = vol_ok and sum(long_sigs) >= 2
-    short_ok   = vol_ok and sum(short_sigs) >= 2
+    momentum_long  = vol_ok and sum(long_sigs) >= 2
+    momentum_short = vol_ok and sum(short_sigs) >= 2
+
+    # ── Path 2: EMA crossover (trend-following) ───────────────────────────────
+    ema20, ema50   = float(lat.get("ema20", 0)),  float(lat.get("ema50", 0))
+    p_ema20, p_ema50 = float(prev.get("ema20", 0)), float(prev.get("ema50", 0))
+    ema_cross_up   = p_ema20 < p_ema50 and ema20 >= ema50 and ema20 > 0
+    ema_cross_down = p_ema20 > p_ema50 and ema20 <= ema50 and ema20 > 0
+
+    # ── Path 3: Bollinger Band touch (mean reversion) ─────────────────────────
+    close    = float(lat.get("close", 0))
+    bb_upper = float(lat.get("bb_upper", 0))
+    bb_lower = float(lat.get("bb_lower", 0))
+    bb_touch_low  = bb_lower > 0 and close <= bb_lower
+    bb_touch_high = bb_upper > 0 and close >= bb_upper
+
+    long_ok  = momentum_long  or ema_cross_up   or bb_touch_low
+    short_ok = momentum_short or ema_cross_down  or bb_touch_high
     return long_ok, short_ok
 
 
