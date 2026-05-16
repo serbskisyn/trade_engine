@@ -51,6 +51,13 @@ TRAILING_TRAIL_PCT:    float = float(os.getenv("TRAILING_TRAIL_PCT",    "0.01"))
 MIN_HOLD_CANDLES: int = int(os.getenv("MIN_HOLD_CANDLES", "2"))
 MAX_HOLD_CANDLES: int = int(os.getenv("MAX_HOLD_CANDLES", "48"))  # 4h auf 5m-Timeframe
 
+# ── Circuit Breaker ────────────────────────────────────────────────────────────
+CIRCUIT_BREAKER_MAX_LOSS_BTC: float = float(os.getenv("CIRCUIT_BREAKER_MAX_LOSS_BTC", "-0.003"))
+CIRCUIT_BREAKER_WINDOW:       int   = int(os.getenv("CIRCUIT_BREAKER_WINDOW", "10"))
+
+# ── Volatilitäts-basierte Positionsgröße ──────────────────────────────────────
+BB_VOL_SCALING: float = float(os.getenv("BB_VOL_SCALING", "2.0"))
+
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 

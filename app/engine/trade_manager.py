@@ -7,16 +7,20 @@ Trailing stop:  activate when profit > TRAILING_ACTIVATE_PCT (default 2%),
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import aiosqlite
 
-from app.config import DB_PATH, STOP_LOSS_PCT, TRAILING_ACTIVATE_PCT, TRAILING_TRAIL_PCT
+from app.config import (DB_PATH, STOP_LOSS_PCT, TRAILING_ACTIVATE_PCT, TRAILING_TRAIL_PCT,
+                        CIRCUIT_BREAKER_MAX_LOSS_BTC, CIRCUIT_BREAKER_WINDOW)
 
 logger = logging.getLogger(__name__)
 
 Market = Literal["crypto", "stocks"]
+
+# ── Circuit Breaker state ─────────────────────────────────────────────────────
+_circuit_breaker_reset_until: datetime | None = None
 
 
 async def _db() -> aiosqlite.Connection:
@@ -143,15 +147,20 @@ async def update_peak(market: Market, symbol: str, current_price: float) -> None
     conn = await _db()
     try:
         async with conn.execute(
-            "SELECT peak_price, entry_price FROM positions WHERE market=? AND symbol=?",
+            "SELECT peak_price, entry_price, side FROM positions WHERE market=? AND symbol=?",
             (market, symbol)
         ) as cur:
             row = await cur.fetchone()
         if not row:
             return
-        peak_price, entry_price = row
-        trailing_active = int((current_price - entry_price) / entry_price >= TRAILING_ACTIVATE_PCT)
-        new_peak        = max(peak_price, current_price)
+        peak_price, entry_price, pos_side = row
+        if pos_side == "short":
+            # For shorts: peak_price tracks the trough (minimum seen)
+            trailing_active = int((entry_price - current_price) / entry_price >= TRAILING_ACTIVATE_PCT)
+            new_peak        = min(peak_price, current_price)
+        else:
+            trailing_active = int((current_price - entry_price) / entry_price >= TRAILING_ACTIVATE_PCT)
+            new_peak        = max(peak_price, current_price)
         await conn.execute(
             "UPDATE positions SET peak_price=?, trailing_active=? WHERE market=? AND symbol=?",
             (new_peak, trailing_active, market, symbol)
@@ -239,3 +248,34 @@ async def get_trade_stats() -> dict:
         }
     finally:
         await conn.close()
+
+
+# ── Circuit Breaker ───────────────────────────────────────────────────────────
+
+async def check_circuit_breaker() -> tuple[bool, str]:
+    """Returns (triggered, reason). Checks P&L sum of last N trades against threshold."""
+    global _circuit_breaker_reset_until
+    if _circuit_breaker_reset_until and datetime.now(timezone.utc) < _circuit_breaker_reset_until:
+        return False, ""
+    conn = await _db()
+    try:
+        async with conn.execute("""
+            SELECT SUM(pl_abs) FROM (
+                SELECT pl_abs FROM trade_log ORDER BY closed_at DESC LIMIT ?
+            )
+        """, (CIRCUIT_BREAKER_WINDOW,)) as cur:
+            row = await cur.fetchone()
+        recent_pl = float(row[0] or 0)
+        if recent_pl < CIRCUIT_BREAKER_MAX_LOSS_BTC:
+            return True, (f"{recent_pl:.6f} BTC Verlust in letzten "
+                          f"{CIRCUIT_BREAKER_WINDOW} Trades (Limit: {CIRCUIT_BREAKER_MAX_LOSS_BTC} BTC)")
+        return False, ""
+    finally:
+        await conn.close()
+
+
+def reset_circuit_breaker(hours: int = 1) -> None:
+    """Override circuit breaker for `hours` hours."""
+    global _circuit_breaker_reset_until
+    _circuit_breaker_reset_until = datetime.now(timezone.utc) + timedelta(hours=hours)
+    logger.warning("[CircuitBreaker] Manuell zurückgesetzt für %d Stunde(n)", hours)

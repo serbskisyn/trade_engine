@@ -11,7 +11,8 @@ from typing import Callable, Awaitable
 
 import pandas as pd
 
-from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, EXIT_CONFIDENCE, MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
+from app.config import (BUY_CONFIDENCE, SELL_CONFIDENCE, EXIT_CONFIDENCE,
+                        MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING)
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -27,7 +28,7 @@ _scan_locks: dict[str, asyncio.Lock] = {}
 def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     """
     Fast pre-filter before LLM. Returns (long_candidate, short_candidate).
-    Only one indicator needs to fire — LLM decides the final signal.
+    2-of-3 voting: at least 2 indicators must agree. LLM decides the final signal.
     Volume must exceed 6-bar SMA to confirm signal (no volume = no breakout).
     """
     if len(df) < 3:
@@ -45,8 +46,11 @@ def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     vol_sma6 = float(lat.get("vol_sma6", vol)) or vol
     vol_ok   = vol >= vol_sma6 * 0.8
 
-    long_ok  = vol_ok and (rsi < 45 or stoch_k < 25 or (p_hist < 0 < hist))
-    short_ok = vol_ok and (rsi > 58 or stoch_k > 75 or (p_hist > 0 > hist))
+    # 2-of-3: RSI, Stochastic K, MACD histogram crossover
+    long_sigs  = [rsi < 45, stoch_k < 25, p_hist < 0 < hist]
+    short_sigs = [rsi > 58, stoch_k > 75, p_hist > 0 > hist]
+    long_ok    = vol_ok and sum(long_sigs) >= 2
+    short_ok   = vol_ok and sum(short_sigs) >= 2
     return long_ok, short_ok
 
 
@@ -122,6 +126,11 @@ async def _fetch_and_analyse(
         prompt     = build_prompt(symbol, df, sentiment_block, position, mkt_str)
         llm_result = await call_llm(prompt)
 
+        bb_upper = float(df.iloc[-1].get("bb_upper", 0))
+        bb_lower = float(df.iloc[-1].get("bb_lower", 0))
+        bb_mid   = float(df.iloc[-1].get("bb_mid", 0))
+        bb_width = (bb_upper - bb_lower) / bb_mid if bb_mid > 0 else 0.0
+
         return {
             "symbol":      symbol,
             "action":      "llm",
@@ -134,6 +143,7 @@ async def _fetch_and_analyse(
             "allow_long":  allow_long,
             "allow_short": allow_short,
             "candles_held": int(position.get("candles_held", 0)) if position else 0,
+            "bb_width":    bb_width,
         }
 
     except Exception as e:
@@ -179,6 +189,12 @@ async def _execute_scan(
     open_positions = {p["symbol"]: p for p in await tm.get_open_positions(market)}
     open_count     = len(open_positions)
     actions        = []
+
+    cb_broken, cb_reason = await tm.check_circuit_breaker()
+    if cb_broken:
+        logger.warning("[Scanner/%s] ⚡ Circuit Breaker aktiv: %s", exchange.name, cb_reason)
+        if notify:
+            await notify(f"⚡ *Circuit Breaker aktiv* ({exchange.name})\n`{cb_reason}`\nNeue Entries gesperrt.")
 
     # Candle counters für offene Positionen parallel hochzählen
     if open_positions:
@@ -254,30 +270,37 @@ async def _execute_scan(
                             await notify(msg)
 
         # Neue Position eröffnen
-        elif open_count < max_positions:
+        elif open_count < max_positions and not cb_broken:
             allow_long  = res.get("allow_long", True)
             allow_short = res.get("allow_short", False)
 
+            # Volatility-adjusted stake: high BB width → smaller position
+            bb_width       = res.get("bb_width", 0.0)
+            vol_factor     = 1.0 / (1.0 + bb_width * BB_VOL_SCALING)
+            adjusted_stake = stake_amount * vol_factor
+
             if signal == "buy" and conf >= BUY_CONFIDENCE and allow_long:
-                order = await exchange.place_order(symbol, Side.BUY, stake_amount)
+                order = await exchange.place_order(symbol, Side.BUY, adjusted_stake)
                 if order:
                     open_count += 1
                     await tm.open_position(market, symbol, order.price, order.qty, side="long")
+                    vol_info = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
                     msg = (f"🟢 *{exchange.name.capitalize()} Long*\n"
                            f"`{symbol}` @ `{order.price:.8f} BTC`\n"
-                           f"Conf: {conf:.2f} | {reason}")
+                           f"Conf: {conf:.2f} | {reason}{vol_info}")
                     actions.append(msg)
                     if notify:
                         await notify(msg)
 
             elif signal == "sell" and conf >= SELL_CONFIDENCE and allow_short:
-                order = await exchange.place_order(symbol, Side.SELL, stake_amount, short=True)
+                order = await exchange.place_order(symbol, Side.SELL, adjusted_stake, short=True)
                 if order:
                     open_count += 1
                     await tm.open_position(market, symbol, order.price, order.qty, side="short")
+                    vol_info = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
                     msg = (f"🔴 *{exchange.name.capitalize()} Short*\n"
                            f"`{symbol}` @ `{order.price:.8f} BTC`\n"
-                           f"Conf: {conf:.2f} | {reason}")
+                           f"Conf: {conf:.2f} | {reason}{vol_info}")
                     actions.append(msg)
                     if notify:
                         await notify(msg)

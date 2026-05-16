@@ -68,6 +68,8 @@ async def status(x_api_secret: str = Header(default="")):
             result["stocks"]["market_open"] = AlpacaExchange().is_market_open()
         except Exception:
             pass
+    cb_broken, cb_reason = await tm.check_circuit_breaker()
+    result["circuit_breaker"] = {"active": cb_broken, "reason": cb_reason}
     return result
 
 
@@ -98,6 +100,22 @@ async def stats(x_api_secret: str = Header(default="")):
 async def recent_trades(limit: int = 3, x_api_secret: str = Header(default="")):
     _auth(x_api_secret)
     return await tm.get_recent_trades(limit)
+
+
+# ── Circuit Breaker ───────────────────────────────────────────────────────────
+
+@app.get("/circuit-breaker")
+async def circuit_breaker_status(x_api_secret: str = Header(default="")):
+    _auth(x_api_secret)
+    broken, reason = await tm.check_circuit_breaker()
+    return {"active": broken, "reason": reason}
+
+
+@app.post("/circuit-breaker/reset")
+async def circuit_breaker_reset(hours: int = 1, x_api_secret: str = Header(default="")):
+    _auth(x_api_secret)
+    tm.reset_circuit_breaker(hours=hours)
+    return {"status": "reset", "override_hours": hours}
 
 
 # ── Manual Scan ───────────────────────────────────────────────────────────────
