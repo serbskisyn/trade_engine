@@ -17,6 +17,7 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 # In-Memory-Cache: {key: (timestamp, data)}
 _CACHE: dict = {}
+_TAVILY_BLOCKED_UNTIL: float = 0.0  # unix timestamp — skip Tavily when rate-limited
 
 
 def _cached(key: str, ttl: int, fetch_fn):
@@ -223,12 +224,16 @@ _COIN_SEARCH = {
 
 def get_coin_news(pair: str) -> list[str]:
     """Returns up to 3 recent headlines (letzten 24h) für den Coin."""
+    global _TAVILY_BLOCKED_UNTIL
     if not TAVILY_API_KEY:
+        return []
+    if time.time() < _TAVILY_BLOCKED_UNTIL:
         return []
     base  = pair.split("/")[0].upper()
     query = _COIN_SEARCH.get(base, f"{base} crypto price news")
 
     def _fetch():
+        global _TAVILY_BLOCKED_UNTIL
         try:
             r = requests.post(
                 "https://api.tavily.com/search",
@@ -239,8 +244,11 @@ def get_coin_news(pair: str) -> list[str]:
                     "max_results":  3,
                     "days":         1,
                 },
-                timeout=12,
+                timeout=3,
             )
+            if r.status_code == 429 or r.status_code == 432:
+                _TAVILY_BLOCKED_UNTIL = time.time() + 300  # skip for 5 min
+                return []
             r.raise_for_status()
             return [f"• {res['title']}" for res in r.json().get("results", [])[:3]]
         except Exception as e:

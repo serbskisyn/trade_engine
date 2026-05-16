@@ -117,7 +117,8 @@ async def _fetch_and_analyse(
                 return {"symbol": symbol, "skip": True, "reason": block_reason}
 
         # ── LLM call ──────────────────────────────────────────────────────────
-        sentiment_block = build_sentiment_block(symbol)
+        loop            = asyncio.get_event_loop()
+        sentiment_block = await loop.run_in_executor(None, build_sentiment_block, symbol)
         prompt     = build_prompt(symbol, df, sentiment_block, position, mkt_str)
         llm_result = await call_llm(prompt)
 
