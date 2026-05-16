@@ -34,4 +34,10 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["stoch_k"]    = stoch_raw.rolling(3).mean()
     df["stoch_d"]    = df["stoch_k"].rolling(3).mean()
 
+    # Momentum / Rate of Change (4 candles)
+    df["mom"]        = df["close"].pct_change(4) * 100
+
+    # Volume SMA (6 candles) — used by technical pre-filter
+    df["vol_sma6"]   = df["volume"].rolling(6).mean()
+
     return df

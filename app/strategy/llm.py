@@ -83,6 +83,7 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
     stoch_k   = float(latest["stoch_k"]) if not pd.isna(latest["stoch_k"]) else 50.0
     stoch_d   = float(latest["stoch_d"]) if not pd.isna(latest["stoch_d"]) else 50.0
     stoch_zone = "oversold" if stoch_k < 20 else ("overbought" if stoch_k > 80 else "neutral")
+    mom       = float(latest["mom"]) if not pd.isna(latest.get("mom", float("nan"))) else 0.0
 
     return (
         f"Symbol: {symbol} | Timeframe: 5m | {now_str} {tz_label}\n"
@@ -90,7 +91,8 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
         f"RSI: {'steigend' if rsi_slope > 0 else 'fallend'} ({latest['rsi']:.1f}) | "
         f"StochRSI: K={stoch_k:.1f} D={stoch_d:.1f} [{stoch_zone}] | "
         f"EMA20 {'>' if latest['ema20'] > latest['ema50'] else '<'} EMA50 | "
-        f"MACD-Hist: {macd_dir} ({latest['macd_hist']:.5f})"
+        f"MACD-Hist: {macd_dir} ({latest['macd_hist']:.5f}) | "
+        f"MOM(4): {mom:+.2f}%"
         f"{pos_ctx}\n\n"
         f"{sentiment_block}\n\n"
         f"Letzte 50 Kerzen (älteste zuerst):\n"

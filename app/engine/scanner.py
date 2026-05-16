@@ -11,7 +11,7 @@ from typing import Callable, Awaitable
 
 import pandas as pd
 
-from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, MIN_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
+from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -28,6 +28,7 @@ def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     """
     Fast pre-filter before LLM. Returns (long_candidate, short_candidate).
     Only one indicator needs to fire — LLM decides the final signal.
+    Volume must exceed 6-bar SMA to confirm signal (no volume = no breakout).
     """
     if len(df) < 3:
         return False, False
@@ -39,8 +40,13 @@ def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     hist    = float(lat.get("macd_hist", 0))
     p_hist  = float(prev.get("macd_hist", 0))
 
-    long_ok  = rsi < 45 or stoch_k < 25 or (p_hist < 0 < hist)
-    short_ok = rsi > 58 or stoch_k > 75 or (p_hist > 0 > hist)
+    # Volume confirmation: current volume >= 80% of 6-bar average
+    vol      = float(lat.get("volume", 1))
+    vol_sma6 = float(lat.get("vol_sma6", vol)) or vol
+    vol_ok   = vol >= vol_sma6 * 0.8
+
+    long_ok  = vol_ok and (rsi < 45 or stoch_k < 25 or (p_hist < 0 < hist))
+    short_ok = vol_ok and (rsi > 58 or stoch_k > 75 or (p_hist > 0 > hist))
     return long_ok, short_ok
 
 
@@ -88,6 +94,12 @@ async def _fetch_and_analyse(
             # LLM exit check after MIN_HOLD_CANDLES
             if candles_held < MIN_HOLD_CANDLES:
                 return {"symbol": symbol, "skip": True}
+
+            # Force-close after MAX_HOLD_CANDLES (capital unlock)
+            if candles_held >= MAX_HOLD_CANDLES:
+                return {"symbol": symbol, "action": "stop", "price": price,
+                        "stop_reason": f"max_hold ({candles_held} candles)",
+                        "position": position, "pos_side": pos_side}
 
         else:
             # Entry: trend gate

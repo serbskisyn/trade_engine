@@ -48,6 +48,7 @@ STOP_LOSS_PCT:   float = float(os.getenv("STOP_LOSS_PCT",   "0.02"))
 TRAILING_ACTIVATE_PCT: float = float(os.getenv("TRAILING_ACTIVATE_PCT", "0.02"))
 TRAILING_TRAIL_PCT:    float = float(os.getenv("TRAILING_TRAIL_PCT",    "0.01"))
 MIN_HOLD_CANDLES: int = int(os.getenv("MIN_HOLD_CANDLES", "2"))
+MAX_HOLD_CANDLES: int = int(os.getenv("MAX_HOLD_CANDLES", "48"))  # 4h auf 5m-Timeframe
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
