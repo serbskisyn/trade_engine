@@ -204,6 +204,20 @@ async def check_stops(market: Market, symbol: str, current_price: float,
         await conn.close()
 
 
+async def get_recent_trades(limit: int = 3) -> list[dict]:
+    conn = await _db()
+    try:
+        async with conn.execute("""
+            SELECT symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at
+            FROM trade_log ORDER BY closed_at DESC LIMIT ?
+        """, (limit,)) as cur:
+            cols = [d[0] for d in cur.description]
+            rows = await cur.fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+    finally:
+        await conn.close()
+
+
 async def get_trade_stats() -> dict:
     conn = await _db()
     try:

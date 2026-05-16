@@ -94,6 +94,12 @@ async def stats(x_api_secret: str = Header(default="")):
     return await tm.get_trade_stats()
 
 
+@app.get("/trades/recent")
+async def recent_trades(limit: int = 3, x_api_secret: str = Header(default="")):
+    _auth(x_api_secret)
+    return await tm.get_recent_trades(limit)
+
+
 # ── Manual Scan ───────────────────────────────────────────────────────────────
 
 @app.post("/scan")
