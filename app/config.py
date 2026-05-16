@@ -14,7 +14,7 @@ OPENROUTER_MODEL:   str = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 # ── Kraken (Crypto) ───────────────────────────────────────────────────────────
 KRAKEN_API_KEY:    str = os.getenv("KRAKEN_API_KEY", "")
 KRAKEN_API_SECRET: str = os.getenv("KRAKEN_API_SECRET", "")
-KRAKEN_STAKE_AMOUNT:  float = float(os.getenv("KRAKEN_STAKE_AMOUNT", "0.0003"))
+KRAKEN_STAKE_AMOUNT:  float = float(os.getenv("KRAKEN_STAKE_AMOUNT", "0.001"))
 KRAKEN_MAX_POSITIONS: int   = int(os.getenv("KRAKEN_MAX_POSITIONS", "5"))
 KRAKEN_PAIRS: list[str] = [
     p.strip() for p in os.getenv(

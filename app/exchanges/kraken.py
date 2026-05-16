@@ -65,18 +65,23 @@ class KrakenExchange(BaseExchange):
     async def place_order(self, symbol: str, side: Side, amount: float,
                           short: bool = False) -> OrderResult | None:
         try:
+            # amount is in BTC (quote); ccxt expects base currency units
+            ticker     = self._ex.fetch_ticker(symbol)
+            price      = float(ticker["last"])
+            base_amount = round(amount / price, 8)
+
             params = {"leverage": 2} if short else {}
-            order = self._ex.create_order(
+            order  = self._ex.create_order(
                 symbol=symbol,
                 type="market",
                 side=side.value,
-                amount=amount,
+                amount=base_amount,
                 params=params,
             )
-            price = float(order.get("price") or order.get("average") or 0)
+            actual_price = float(order.get("price") or order.get("average") or price)
             return OrderResult(
-                symbol=symbol, side=side, qty=amount,
-                price=price, order_id=str(order["id"]),
+                symbol=symbol, side=side, qty=base_amount,
+                price=actual_price, order_id=str(order["id"]),
             )
         except Exception as e:
             logger.warning("Kraken order failed for %s: %s", symbol, e)

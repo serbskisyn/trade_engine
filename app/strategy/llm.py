@@ -113,12 +113,19 @@ async def call_llm(prompt: str) -> dict:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
-                    "max_tokens": 150,
+                    "max_tokens": 200,
                     "temperature": 0.1,
                 },
             )
             r.raise_for_status()
             raw = r.json()["choices"][0]["message"]["content"].strip()
+            # strip optional markdown code fences
+            if raw.startswith("```"):
+                raw = raw.split("```")[1].lstrip("json").strip()
+            # extract first {...} block if LLM added surrounding text
+            start, end = raw.find("{"), raw.rfind("}")
+            if start != -1 and end != -1:
+                raw = raw[start:end + 1]
             return json.loads(raw)
     except Exception as e:
         logger.warning("LLM call failed: %s", e)
