@@ -131,3 +131,15 @@ class AlpacaExchange(BaseExchange):
         except Exception as e:
             logger.warning("Alpaca account_info failed: %s", e)
             return {}
+
+
+# ── Singleton ─────────────────────────────────────────────────────────────────
+_instance: AlpacaExchange | None = None
+
+
+def get_alpaca() -> AlpacaExchange:
+    """Lazy singleton — vermeidet wiederholten Alpaca-Client-Init pro Call."""
+    global _instance
+    if _instance is None:
+        _instance = AlpacaExchange()
+    return _instance

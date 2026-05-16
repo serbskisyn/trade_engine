@@ -141,3 +141,15 @@ class KrakenExchange(BaseExchange):
         except Exception as e:
             logger.warning("Kraken account_info failed: %s", e)
             return {}
+
+
+# ── Singleton ─────────────────────────────────────────────────────────────────
+_instance: KrakenExchange | None = None
+
+
+def get_kraken() -> KrakenExchange:
+    """Lazy singleton — vermeidet wiederholtes ccxt.load_markets pro /status-Call."""
+    global _instance
+    if _instance is None:
+        _instance = KrakenExchange()
+    return _instance

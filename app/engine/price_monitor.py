@@ -47,12 +47,12 @@ async def price_monitor_loop(notify: Notifier | None = None) -> None:
     alpaca_exchange  = None
 
     if KRAKEN_API_KEY:
-        from app.exchanges.kraken import KrakenExchange
-        kraken_exchange = KrakenExchange()
+        from app.exchanges.kraken import get_kraken
+        kraken_exchange = get_kraken()
 
     if ALPACA_API_KEY:
-        from app.exchanges.alpaca import AlpacaExchange
-        alpaca_exchange = AlpacaExchange()
+        from app.exchanges.alpaca import get_alpaca
+        alpaca_exchange = get_alpaca()
 
     logger.info("Price Monitor gestartet (alle %ds, Stop-Loss + Trailing Stop)", _INTERVAL)
 

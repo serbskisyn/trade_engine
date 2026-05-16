@@ -33,8 +33,8 @@ async def _crypto_loop(notify: Notifier | None) -> None:
     if not KRAKEN_API_KEY:
         logger.info("Kraken nicht konfiguriert — Crypto-Loop deaktiviert.")
         return
-    from app.exchanges.kraken import KrakenExchange
-    exchange = KrakenExchange()
+    from app.exchanges.kraken import get_kraken
+    exchange = get_kraken()
     logger.info("Crypto-Loop gestartet (alle 5 Min, 24/7)")
     while True:
         try:
@@ -51,8 +51,8 @@ async def _stocks_loop(notify: Notifier | None) -> None:
     if not ALPACA_API_KEY:
         logger.info("Alpaca nicht konfiguriert — Stocks-Loop deaktiviert.")
         return
-    from app.exchanges.alpaca import AlpacaExchange
-    exchange = AlpacaExchange()
+    from app.exchanges.alpaca import get_alpaca
+    exchange = get_alpaca()
     logger.info("Stocks-Loop gestartet (Mo–Fr 10:00–15:45 ET, alle 5 Min)")
     while True:
         if _stocks_window_open():

@@ -56,16 +56,16 @@ async def status(x_api_secret: str = Header(default="")):
     }
     if KRAKEN_API_KEY:
         try:
-            from app.exchanges.kraken import KrakenExchange
-            result["crypto"]["account"] = KrakenExchange().get_account_info()
+            from app.exchanges.kraken import get_kraken
+            result["crypto"]["account"] = get_kraken().get_account_info()
         except Exception:
             pass
     if ALPACA_API_KEY:
         try:
-            from app.exchanges.alpaca import AlpacaExchange
-            acc = AlpacaExchange().get_account_info()
-            result["stocks"]["account"] = acc
-            result["stocks"]["market_open"] = AlpacaExchange().is_market_open()
+            from app.exchanges.alpaca import get_alpaca
+            alpaca = get_alpaca()
+            result["stocks"]["account"] = alpaca.get_account_info()
+            result["stocks"]["market_open"] = alpaca.is_market_open()
         except Exception:
             pass
     cb_broken, cb_reason = await tm.check_circuit_breaker()
@@ -136,12 +136,12 @@ async def manual_scan(
         from app.engine.scanner import run_scan
         actions = []
         if market in ("all", "crypto") and KRAKEN_API_KEY:
-            from app.exchanges.kraken import KrakenExchange
-            actions += await run_scan(KrakenExchange(), KRAKEN_PAIRS,
+            from app.exchanges.kraken import get_kraken
+            actions += await run_scan(get_kraken(), KRAKEN_PAIRS,
                                       KRAKEN_STAKE_AMOUNT, KRAKEN_MAX_POSITIONS, _notify_fn)
         if market in ("all", "stocks") and ALPACA_API_KEY:
-            from app.exchanges.alpaca import AlpacaExchange
-            actions += await run_scan(AlpacaExchange(), ALPACA_SYMBOLS,
+            from app.exchanges.alpaca import get_alpaca
+            actions += await run_scan(get_alpaca(), ALPACA_SYMBOLS,
                                       ALPACA_STAKE_USD, ALPACA_MAX_POSITIONS, _notify_fn)
         logger.info("Manual scan complete: %d actions", len(actions))
 
