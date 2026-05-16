@@ -1,10 +1,15 @@
 """
-Scanner — runs one full scan cycle for a given exchange + symbol list.
-Called by the scheduler every 5 minutes.
+Scanner — parallel scan cycle per exchange + symbol list.
+Phase 1: fetch bars + trend bars for ALL symbols concurrently
+Phase 2: LLM calls only for symbols that pass technical pre-filter (concurrent)
+Phase 3: trade execution (sequential to prevent double-orders)
 """
 import asyncio
 import logging
+import time
 from typing import Callable, Awaitable
+
+import pandas as pd
 
 from app.config import BUY_CONFIDENCE, SELL_CONFIDENCE, MIN_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS
 from app.exchanges.base import BaseExchange, Side
@@ -19,6 +24,110 @@ Notifier = Callable[[str], Awaitable[None]]
 _scan_locks: dict[str, asyncio.Lock] = {}
 
 
+def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
+    """
+    Fast pre-filter before LLM. Returns (long_candidate, short_candidate).
+    Only one indicator needs to fire — LLM decides the final signal.
+    """
+    if len(df) < 3:
+        return False, False
+    lat  = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    rsi     = float(lat.get("rsi", 50))
+    stoch_k = float(lat["stoch_k"]) if pd.notna(lat.get("stoch_k")) else 50.0
+    hist    = float(lat.get("macd_hist", 0))
+    p_hist  = float(prev.get("macd_hist", 0))
+
+    long_ok  = rsi < 45 or stoch_k < 25 or (p_hist < 0 < hist)
+    short_ok = rsi > 58 or stoch_k > 75 or (p_hist > 0 > hist)
+    return long_ok, short_ok
+
+
+async def _fetch_and_analyse(
+    symbol: str,
+    exchange: BaseExchange,
+    market: str,
+    mkt_str: str,
+    open_positions: dict,
+) -> dict:
+    """
+    Fetch all data for one symbol and run LLM if technically warranted.
+    Returns a result dict consumed by the execution phase.
+    """
+    try:
+        df, trend_df = await asyncio.gather(
+            exchange.fetch_bars(symbol),
+            exchange.fetch_trend_bars(symbol),
+        )
+        if df is None:
+            return {"symbol": symbol, "skip": True}
+
+        price    = float(df.iloc[-1]["close"])
+        position = open_positions.get(symbol)
+        pos_side = position.get("side", "long") if position else None
+
+        # 1h trend direction
+        trend_clearly_down = False
+        if trend_df is not None and len(trend_df) >= 6:
+            ema50     = float(trend_df.iloc[-1]["ema50"])
+            slope_pct = (ema50 - float(trend_df.iloc[-6]["ema50"])) / ema50 if ema50 else 0
+            trend_clearly_down = slope_pct < -0.001
+
+        allow_long  = (not trend_clearly_down) or trend_df is None
+        allow_short = (trend_clearly_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
+
+        # ── Open position: check hardware stops first ─────────────────────────
+        if position:
+            candles_held = int(position.get("candles_held", 0))
+            stop_hit, stop_reason = await tm.check_stops(market, symbol, price, candles_held)
+            if stop_hit:
+                return {"symbol": symbol, "action": "stop", "price": price,
+                        "stop_reason": stop_reason, "position": position, "pos_side": pos_side}
+
+            # LLM exit check after MIN_HOLD_CANDLES
+            if candles_held < MIN_HOLD_CANDLES:
+                return {"symbol": symbol, "skip": True}
+
+        else:
+            # Entry: trend gate
+            if not allow_long and not allow_short:
+                return {"symbol": symbol, "skip": True, "reason": "trend_blocked"}
+
+            # Entry: technical pre-filter
+            long_sig, short_sig = _technical_signal(df)
+            if not ((allow_long and long_sig) or (allow_short and short_sig)):
+                logger.debug("[Scanner] %s — kein techn. Signal, LLM skip", symbol)
+                return {"symbol": symbol, "skip": True, "reason": "no_signal"}
+
+            blocked, block_reason = should_block_entry(symbol)
+            if blocked:
+                return {"symbol": symbol, "skip": True, "reason": block_reason}
+
+        # ── LLM call ──────────────────────────────────────────────────────────
+        sentiment_block = build_sentiment_block(symbol)
+        prompt     = build_prompt(symbol, df, sentiment_block, position, mkt_str)
+        llm_result = await call_llm(prompt)
+
+        return {
+            "symbol":      symbol,
+            "action":      "llm",
+            "price":       price,
+            "position":    position,
+            "pos_side":    pos_side,
+            "signal":      llm_result.get("signal", "hold"),
+            "conf":        float(llm_result.get("confidence", 0.0)),
+            "reason":      llm_result.get("reason", ""),
+            "allow_long":  allow_long,
+            "allow_short": allow_short,
+            "candles_held": int(position.get("candles_held", 0)) if position else 0,
+        }
+
+    except Exception as e:
+        logger.warning("[Scanner] %s Fehler: %s", symbol, e)
+        return {"symbol": symbol, "skip": True}
+
+
 async def run_scan(
     exchange: BaseExchange,
     symbols: list[str],
@@ -26,14 +135,9 @@ async def run_scan(
     max_positions: int,
     notify: Notifier | None = None,
 ) -> list[str]:
-    """
-    Scans all symbols, executes trades.
-    Returns list of action strings (for Telegram summary).
-    """
     market  = "stocks" if exchange.name == "alpaca" else "crypto"
     mkt_str = "US" if market == "stocks" else "crypto"
 
-    # Prevent concurrent scans for the same market (manual + scheduled overlap)
     if market not in _scan_locks:
         _scan_locks[market] = asyncio.Lock()
     if _scan_locks[market].locked():
@@ -41,11 +145,11 @@ async def run_scan(
         return []
 
     async with _scan_locks[market]:
-     return await _run_scan_inner(exchange, symbols, stake_amount, max_positions, notify,
-                                  market, mkt_str)
+        return await _execute_scan(exchange, symbols, stake_amount, max_positions,
+                                   notify, market, mkt_str)
 
 
-async def _run_scan_inner(
+async def _execute_scan(
     exchange: BaseExchange,
     symbols: list[str],
     stake_amount: float,
@@ -55,134 +159,115 @@ async def _run_scan_inner(
     mkt_str: str,
 ) -> list[str]:
     if not exchange.is_market_open():
-        logger.info("[Scanner/%s] Markt geschlossen — übersprungen", exchange.name)
+        logger.info("[Scanner/%s] Markt geschlossen", exchange.name)
         return []
 
+    t0             = time.monotonic()
     open_positions = {p["symbol"]: p for p in await tm.get_open_positions(market)}
     open_count     = len(open_positions)
     actions        = []
 
-    for symbol in symbols:
-        df = await exchange.fetch_bars(symbol)
-        if df is None:
+    # Candle counters für offene Positionen parallel hochzählen
+    if open_positions:
+        await asyncio.gather(*[
+            tm.increment_candles(market, sym) for sym in open_positions
+        ])
+
+    # ── Phase 1+2: Alle Symbole parallel fetchen + LLM ───────────────────────
+    results = await asyncio.gather(*[
+        _fetch_and_analyse(sym, exchange, market, mkt_str, open_positions)
+        for sym in symbols
+    ])
+
+    llm_count = sum(1 for r in results if r.get("action") in ("llm", "stop"))
+    logger.info("[Scanner/%s] %d/%d Symbole mit LLM/Stop analysiert",
+                exchange.name, llm_count, len(symbols))
+
+    # ── Phase 3: Trades ausführen (sequentiell) ───────────────────────────────
+    for res in results:
+        if res.get("skip"):
             continue
 
-        await tm.increment_candles(market, symbol)
+        symbol   = res["symbol"]
+        price    = res.get("price", 0.0)
+        position = res.get("position")
+        pos_side = res.get("pos_side")
 
-        latest   = df.iloc[-1]
-        position = open_positions.get(symbol)
-        price    = float(latest["close"])
-        pos_side = position.get("side", "long") if position else None
+        # Stop-Loss / Trailing ausführen
+        if res.get("action") == "stop":
+            ok = await exchange.close_position(symbol)
+            if ok:
+                result = await tm.close_position(market, symbol, price, res["stop_reason"])
+                if result:
+                    sign = "+" if result["pl_pct"] >= 0 else ""
+                    msg  = (f"🛑 *{exchange.name.capitalize()} Exit*\n"
+                            f"`{symbol}` {sign}{result['pl_pct']:.2f}% | {res['stop_reason']}")
+                    actions.append(msg)
+                    if notify:
+                        await notify(msg)
+            continue
 
-        # ── Multi-Timeframe: 1h trend filter ─────────────────────────────────
-        trend_df           = await exchange.fetch_trend_bars(symbol)
-        trend_clearly_down = False
-        if trend_df is not None and len(trend_df) >= 6:
-            ema50_val          = float(trend_df.iloc[-1]["ema50"])
-            h1_slope           = ema50_val - float(trend_df.iloc[-6]["ema50"])
-            slope_pct          = h1_slope / ema50_val if ema50_val > 0 else 0
-            trend_clearly_down = slope_pct < -0.001   # < -0.1% über 6h = klar abwärts
+        signal = res.get("signal", "hold")
+        conf   = res.get("conf", 0.0)
+        reason = res.get("reason", "")
 
-        # ── Exit path ─────────────────────────────────────────────────────────
+        logger.info("[Scanner/%s] %s%s → %s conf=%.2f",
+                    exchange.name, symbol,
+                    f" ({pos_side})" if position else "",
+                    signal, conf)
+
+        # Exit offener Position
         if position:
-            candles_held = int(position.get("candles_held", 0))
-
-            # Hardware stops first (no LLM cost)
-            stop_hit, stop_reason = await tm.check_stops(market, symbol, price, candles_held)
-            if stop_hit:
+            exit_triggered = (
+                (pos_side == "short" and signal == "buy"  and conf >= BUY_CONFIDENCE) or
+                (pos_side != "short" and signal == "sell" and conf >= SELL_CONFIDENCE)
+            )
+            if exit_triggered:
                 ok = await exchange.close_position(symbol)
                 if ok:
-                    result = await tm.close_position(market, symbol, price, stop_reason)
+                    tag    = "buy" if pos_side == "short" else "sell"
+                    result = await tm.close_position(market, symbol, price, f"llm_{tag}: {reason}")
                     if result:
-                        sign = "+" if result["pl_pct"] >= 0 else ""
-                        msg  = (f"🛑 *{exchange.name.capitalize()} Exit*\n"
-                                f"`{symbol}` {sign}{result['pl_pct']:.2f}% | {stop_reason}")
+                        sign  = "+" if result["pl_pct"] >= 0 else ""
+                        label = "Short-Exit" if pos_side == "short" else "Verkauf"
+                        msg   = (f"📤 *{exchange.name.capitalize()} {label}*\n"
+                                 f"`{symbol}` {sign}{result['pl_pct']:.2f}% "
+                                 f"({sign}${result['pl_abs']:.4f} BTC)\n"
+                                 f"Grund: {reason}")
                         actions.append(msg)
                         if notify:
                             await notify(msg)
-                continue
 
-            # LLM exit signal
-            if candles_held >= MIN_HOLD_CANDLES:
-                sentiment_block = build_sentiment_block(symbol)
-                prompt  = build_prompt(symbol, df, sentiment_block, position, mkt_str)
-                result  = await call_llm(prompt)
-                signal  = result.get("signal", "hold")
-                conf    = float(result.get("confidence", 0.0))
-                reason  = result.get("reason", "")
-                logger.info("[Scanner/%s] %s (open %s) → %s conf=%.2f",
-                            exchange.name, symbol, pos_side, signal, conf)
+        # Neue Position eröffnen
+        elif open_count < max_positions:
+            allow_long  = res.get("allow_long", True)
+            allow_short = res.get("allow_short", False)
 
-                # Short: "buy" closes; Long: "sell" closes
-                exit_triggered = (
-                    (pos_side == "short" and signal == "buy"  and conf >= BUY_CONFIDENCE) or
-                    (pos_side != "short" and signal == "sell" and conf >= SELL_CONFIDENCE)
-                )
-                if exit_triggered:
-                    ok = await exchange.close_position(symbol)
-                    if ok:
-                        close_reason = f"llm_{'buy' if pos_side == 'short' else 'sell'}: {reason}"
-                        res = await tm.close_position(market, symbol, price, close_reason)
-                        if res:
-                            sign  = "+" if res["pl_pct"] >= 0 else ""
-                            label = "Short-Exit" if pos_side == "short" else "Verkauf"
-                            msg   = (f"📤 *{exchange.name.capitalize()} {label}*\n"
-                                     f"`{symbol}` {sign}{res['pl_pct']:.2f}% ({sign}${res['pl_abs']:.2f})\n"
-                                     f"Grund: {reason}")
-                            actions.append(msg)
-                            if notify:
-                                await notify(msg)
-            continue
+            if signal == "buy" and conf >= BUY_CONFIDENCE and allow_long:
+                order = await exchange.place_order(symbol, Side.BUY, stake_amount)
+                if order:
+                    open_count += 1
+                    await tm.open_position(market, symbol, order.price, order.qty, side="long")
+                    msg = (f"🟢 *{exchange.name.capitalize()} Long*\n"
+                           f"`{symbol}` @ `{order.price:.8f} BTC`\n"
+                           f"Conf: {conf:.2f} | {reason}")
+                    actions.append(msg)
+                    if notify:
+                        await notify(msg)
 
-        # ── Entry path ────────────────────────────────────────────────────────
-        if open_count >= max_positions:
-            continue
+            elif signal == "sell" and conf >= SELL_CONFIDENCE and allow_short:
+                order = await exchange.place_order(symbol, Side.SELL, stake_amount, short=True)
+                if order:
+                    open_count += 1
+                    await tm.open_position(market, symbol, order.price, order.qty, side="short")
+                    msg = (f"🔴 *{exchange.name.capitalize()} Short*\n"
+                           f"`{symbol}` @ `{order.price:.8f} BTC`\n"
+                           f"Conf: {conf:.2f} | {reason}")
+                    actions.append(msg)
+                    if notify:
+                        await notify(msg)
 
-        blocked, block_reason = should_block_entry(symbol)
-        if blocked:
-            logger.info("[Scanner/%s] %s — Entry blockiert: %s", exchange.name, symbol, block_reason)
-            continue
-
-        # Longs: erlaubt außer bei klar negativem 1h-Slope (< -0.1%)
-        # Shorts: nur bei klar negativem 1h-Slope + KRAKEN_ALLOW_SHORTS
-        allow_long  = (not trend_clearly_down) or trend_df is None
-        allow_short = (trend_clearly_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
-
-        if not allow_long and not allow_short:
-            logger.info("[Scanner/%s] %s — Entry blockiert (1h EMA50 klar abwärts, kein Short erlaubt)",
-                        exchange.name, symbol)
-            continue
-
-        sentiment_block = build_sentiment_block(symbol)
-        prompt  = build_prompt(symbol, df, sentiment_block, None, mkt_str)
-        result  = await call_llm(prompt)
-        signal  = result.get("signal", "hold")
-        conf    = float(result.get("confidence", 0.0))
-        reason  = result.get("reason", "")
-        logger.info("[Scanner/%s] %s → %s conf=%.2f", exchange.name, symbol, signal, conf)
-
-        if signal == "buy" and conf >= BUY_CONFIDENCE and allow_long:
-            order = await exchange.place_order(symbol, Side.BUY, stake_amount)
-            if order:
-                open_count += 1
-                await tm.open_position(market, symbol, order.price, order.qty, side="long")
-                msg = (f"🟢 *{exchange.name.capitalize()} Long*\n"
-                       f"`{symbol}` @ ~{order.price:.4f}\n"
-                       f"Einsatz: {stake_amount} | Conf: {conf:.2f}\nGrund: {reason}")
-                actions.append(msg)
-                if notify:
-                    await notify(msg)
-
-        elif signal == "sell" and conf >= SELL_CONFIDENCE and allow_short:
-            order = await exchange.place_order(symbol, Side.SELL, stake_amount, short=True)
-            if order:
-                open_count += 1
-                await tm.open_position(market, symbol, order.price, order.qty, side="short")
-                msg = (f"🔴 *{exchange.name.capitalize()} Short*\n"
-                       f"`{symbol}` @ ~{order.price:.4f}\n"
-                       f"Einsatz: {stake_amount} | Conf: {conf:.2f}\nGrund: {reason}")
-                actions.append(msg)
-                if notify:
-                    await notify(msg)
-
+    elapsed = time.monotonic() - t0
+    logger.info("[Scanner/%s] ✓ Scan in %.1fs abgeschlossen — %d Aktionen",
+                exchange.name, elapsed, len(actions))
     return actions

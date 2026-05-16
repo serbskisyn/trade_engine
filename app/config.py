@@ -47,7 +47,7 @@ SELL_CONFIDENCE: float = float(os.getenv("SELL_CONFIDENCE", "0.55"))
 STOP_LOSS_PCT:   float = float(os.getenv("STOP_LOSS_PCT",   "0.02"))
 TRAILING_ACTIVATE_PCT: float = float(os.getenv("TRAILING_ACTIVATE_PCT", "0.02"))
 TRAILING_TRAIL_PCT:    float = float(os.getenv("TRAILING_TRAIL_PCT",    "0.01"))
-MIN_HOLD_CANDLES: int = int(os.getenv("MIN_HOLD_CANDLES", "6"))
+MIN_HOLD_CANDLES: int = int(os.getenv("MIN_HOLD_CANDLES", "2"))
 
 # ── Sentiment ─────────────────────────────────────────────────────────────────
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
