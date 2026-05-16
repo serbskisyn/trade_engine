@@ -26,4 +26,12 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["macd_sig"]  = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_sig"]
 
+    # Stochastic RSI (14/14/3/3)
+    rsi_min          = df["rsi"].rolling(14).min()
+    rsi_max          = df["rsi"].rolling(14).max()
+    rsi_range        = (rsi_max - rsi_min).replace(0, 1)
+    stoch_raw        = (df["rsi"] - rsi_min) / rsi_range * 100
+    df["stoch_k"]    = stoch_raw.rolling(3).mean()
+    df["stoch_d"]    = df["stoch_k"].rolling(3).mean()
+
     return df

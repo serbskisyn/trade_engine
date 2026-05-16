@@ -16,21 +16,23 @@ SYSTEM_PROMPT = """Du bist ein erfahrener Trader. Erkenne TRENDUMKEHRPUNKTE und 
 Antworte NUR mit validem JSON:
 {"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "kurze Begründung"}
 
-KAUF (Long eröffnen / Short schließen) nur bei:
-- RSI war unter 38, dreht jetzt aufwärts (min. 2 Kerzen)
+KAUF (Long eröffnen / Short schließen) — mind. 1 Bedingung erfüllt:
+- RSI war unter 42, dreht jetzt aufwärts (min. 2 Kerzen)
+- StochRSI %K unter 20, kreuzt %D von unten nach oben
 - EMA20 kreuzt EMA50 von unten nach oben
-- Preis berührt unteres Bollinger-Band und schließt darüber zurück
 - MACD-Histogramm dreht von negativ → positiv (Bullish Crossover)
+- Preis berührt unteres Bollinger-Band und schließt darüber zurück
 
-VERKAUF (Long schließen / Short eröffnen) nur bei:
-- RSI war über 65, dreht jetzt abwärts
+VERKAUF (Long schließen / Short eröffnen) — mind. 1 Bedingung erfüllt:
+- RSI war über 60, dreht jetzt abwärts
+- StochRSI %K über 80, kreuzt %D von oben nach unten
 - EMA20 kreuzt EMA50 von oben nach unten
-- Preis schließt unterhalb des oberen Bollinger-Bands zurück
 - MACD-Histogramm dreht von positiv → negativ (Bearish Crossover)
+- Preis schließt unterhalb des oberen Bollinger-Bands zurück
 
 SHORT-LOGIK: "sell" ohne offene Position = Short öffnen. "buy" bei offener Short-Position = Short schließen.
 Berücksichtige Marktkontext (Fear&Greed, Polymarket, News, Funding Rate) aus dem Prompt.
-Confidence unter 0.65: immer "hold".
+Confidence unter 0.60: immer "hold".
 """
 
 
@@ -43,7 +45,8 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
         f"{row['timestamp'].strftime('%Y-%m-%d %H:%M')} | "
         f"O:{row['open']:.4f} H:{row['high']:.4f} L:{row['low']:.4f} C:{row['close']:.4f} "
         f"V:{row['volume']:.0f} | "
-        f"RSI:{row['rsi']:.1f} EMA20:{row['ema20']:.4f} EMA50:{row['ema50']:.4f} "
+        f"RSI:{row['rsi']:.1f} SK:{row['stoch_k']:.1f} SD:{row['stoch_d']:.1f} "
+        f"EMA20:{row['ema20']:.4f} EMA50:{row['ema50']:.4f} "
         f"BB_u:{row['bb_upper']:.4f} BB_l:{row['bb_lower']:.4f} "
         f"MACD:{row['macd']:.5f} Sig:{row['macd_sig']:.5f} Hist:{row['macd_hist']:.5f}"
         for _, row in last.iterrows()
@@ -78,12 +81,16 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
     tz_label = "ET" if market == "US" else "UTC"
     now_str  = datetime.now(ET if market == "US" else None).strftime("%Y-%m-%d %H:%M")
 
+    stoch_k   = float(latest["stoch_k"]) if not pd.isna(latest["stoch_k"]) else 50.0
+    stoch_d   = float(latest["stoch_d"]) if not pd.isna(latest["stoch_d"]) else 50.0
+    stoch_zone = "oversold" if stoch_k < 20 else ("overbought" if stoch_k > 80 else "neutral")
+
     return (
         f"Symbol: {symbol} | Timeframe: 5m | {now_str} {tz_label}\n"
         f"Trend (20 Kerzen): {'aufwärts' if slope_20 > 0 else 'abwärts'} | "
         f"RSI: {'steigend' if rsi_slope > 0 else 'fallend'} ({latest['rsi']:.1f}) | "
+        f"StochRSI: K={stoch_k:.1f} D={stoch_d:.1f} [{stoch_zone}] | "
         f"EMA20 {'>' if latest['ema20'] > latest['ema50'] else '<'} EMA50 | "
-        f"EMA50-Slope: {'aufwärts' if ema_slope > 0 else 'abwärts'} | "
         f"MACD-Hist: {macd_dir} ({latest['macd_hist']:.5f})"
         f"{pos_ctx}\n\n"
         f"{sentiment_block}\n\n"

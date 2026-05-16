@@ -51,13 +51,13 @@ async def run_scan(
         pos_side = position.get("side", "long") if position else None
 
         # ── Multi-Timeframe: 1h trend filter ─────────────────────────────────
-        trend_df   = await exchange.fetch_trend_bars(symbol)
-        trend_up   = False
-        trend_down = False
+        trend_df           = await exchange.fetch_trend_bars(symbol)
+        trend_clearly_down = False
         if trend_df is not None and len(trend_df) >= 6:
-            h1_slope   = float(trend_df.iloc[-1]["ema50"]) - float(trend_df.iloc[-6]["ema50"])
-            trend_up   = h1_slope > 0
-            trend_down = h1_slope < 0
+            ema50_val          = float(trend_df.iloc[-1]["ema50"])
+            h1_slope           = ema50_val - float(trend_df.iloc[-6]["ema50"])
+            slope_pct          = h1_slope / ema50_val if ema50_val > 0 else 0
+            trend_clearly_down = slope_pct < -0.001   # < -0.1% über 6h = klar abwärts
 
         # ── Exit path ─────────────────────────────────────────────────────────
         if position:
@@ -119,12 +119,13 @@ async def run_scan(
             logger.info("[Scanner/%s] %s — Entry blockiert: %s", exchange.name, symbol, block_reason)
             continue
 
-        # Longs need 1h uptrend; shorts need 1h downtrend + KRAKEN_ALLOW_SHORTS
-        allow_long  = trend_up   or trend_df is None
-        allow_short = (trend_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
+        # Longs: erlaubt außer bei klar negativem 1h-Slope (< -0.1%)
+        # Shorts: nur bei klar negativem 1h-Slope + KRAKEN_ALLOW_SHORTS
+        allow_long  = (not trend_clearly_down) or trend_df is None
+        allow_short = (trend_clearly_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
 
         if not allow_long and not allow_short:
-            logger.info("[Scanner/%s] %s — Entry blockiert (1h EMA50 seitwärts/neutral)",
+            logger.info("[Scanner/%s] %s — Entry blockiert (1h EMA50 klar abwärts, kein Short erlaubt)",
                         exchange.name, symbol)
             continue
 
