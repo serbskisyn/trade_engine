@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _run(fn, *args, **kwargs):
     """Run blocking CCXT call in thread pool so we don't block the event loop."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return loop.run_in_executor(None, partial(fn, *args, **kwargs))
 
 
@@ -64,16 +64,16 @@ class KrakenExchange(BaseExchange):
             logger.warning("Kraken get_current_price failed for %s: %s", symbol, e)
             return None
 
-    def get_positions(self) -> dict[str, dict]:
+    async def get_positions(self) -> dict[str, dict]:
         try:
-            balance = self._ex.fetch_balance()
+            balance = await _run(self._ex.fetch_balance)
             positions = {}
             for currency, info in balance.get("total", {}).items():
                 if currency in ("BTC", "EUR", "USD") or float(info or 0) <= 0:
                     continue
                 symbol = f"{currency}/BTC"
                 try:
-                    ticker = self._ex.fetch_ticker(symbol)
+                    ticker = await _run(self._ex.fetch_ticker, symbol)
                     qty    = float(info)
                     price  = float(ticker["last"])
                     positions[symbol] = {
@@ -122,7 +122,7 @@ class KrakenExchange(BaseExchange):
                 logger.info("Kraken short closed: %s qty=%.4f", symbol, qty)
                 return True
             else:
-                positions = self.get_positions()
+                positions = await self.get_positions()
                 if symbol not in positions:
                     return False
                 actual_qty = float(positions[symbol]["qty"])
@@ -133,9 +133,9 @@ class KrakenExchange(BaseExchange):
             logger.warning("Kraken close_position failed for %s: %s", symbol, e)
             return False
 
-    def get_account_info(self) -> dict:
+    async def get_account_info(self) -> dict:
         try:
-            balance = self._ex.fetch_balance()
+            balance = await _run(self._ex.fetch_balance)
             btc = float(balance.get("total", {}).get("BTC", 0))
             return {"currency": "BTC", "balance": btc}
         except Exception as e:
