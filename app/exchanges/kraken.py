@@ -65,10 +65,14 @@ class KrakenExchange(BaseExchange):
     async def place_order(self, symbol: str, side: Side, amount: float,
                           short: bool = False) -> OrderResult | None:
         try:
-            # amount is in BTC (quote); ccxt expects base currency units
-            ticker     = self._ex.fetch_ticker(symbol)
-            price      = float(ticker["last"])
-            base_amount = round(amount / price, 8)
+            ticker = self._ex.fetch_ticker(symbol)
+            price  = float(ticker["last"])
+            # For BTC/* pairs (e.g. BTC/EUR) the base IS BTC — no conversion needed
+            # For altcoin/BTC pairs convert BTC stake → base currency units
+            if symbol.startswith("BTC/"):
+                base_amount = amount
+            else:
+                base_amount = round(amount / price, 8)
 
             params = {"leverage": 2} if short else {}
             order  = self._ex.create_order(

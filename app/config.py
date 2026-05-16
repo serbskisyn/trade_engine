@@ -20,7 +20,7 @@ KRAKEN_PAIRS: list[str] = [
     p.strip() for p in os.getenv(
         "KRAKEN_PAIRS",
         "ETH/BTC,SOL/BTC,XRP/BTC,ADA/BTC,LTC/BTC,LINK/BTC,DOT/BTC,ATOM/BTC,DOGE/BTC,XLM/BTC,"
-        "UNI/BTC,AAVE/BTC,ETC/BTC,TRX/BTC,XMR/BTC,BTC/EUR"
+        "UNI/BTC,AAVE/BTC,ETC/BTC,TRX/BTC,BTC/EUR"
     ).split(",") if p.strip()
 ]
 KRAKEN_ALLOW_SHORTS: bool = os.getenv("KRAKEN_ALLOW_SHORTS", "true").lower() == "true"

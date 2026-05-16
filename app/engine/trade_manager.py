@@ -70,7 +70,7 @@ async def open_position(market: Market, symbol: str, entry_price: float, qty: fl
         """, (market, symbol, side, entry_price, qty, entry_price,
                datetime.now(timezone.utc).isoformat()))
         await conn.commit()
-        logger.info("[TradeManager] Opened %s %s %s @ %.4f qty=%.4f",
+        logger.info("[TradeManager] Opened %s %s %s @ %.8f qty=%.4f",
                     side.upper(), market, symbol, entry_price, qty)
     finally:
         await conn.close()

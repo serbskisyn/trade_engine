@@ -2,6 +2,7 @@
 Scanner — runs one full scan cycle for a given exchange + symbol list.
 Called by the scheduler every 5 minutes.
 """
+import asyncio
 import logging
 from typing import Callable, Awaitable
 
@@ -14,6 +15,8 @@ from app.strategy.sentiment import build_sentiment_block, should_block_entry
 logger = logging.getLogger(__name__)
 
 Notifier = Callable[[str], Awaitable[None]]
+
+_scan_locks: dict[str, asyncio.Lock] = {}
 
 
 async def run_scan(
@@ -30,6 +33,27 @@ async def run_scan(
     market  = "stocks" if exchange.name == "alpaca" else "crypto"
     mkt_str = "US" if market == "stocks" else "crypto"
 
+    # Prevent concurrent scans for the same market (manual + scheduled overlap)
+    if market not in _scan_locks:
+        _scan_locks[market] = asyncio.Lock()
+    if _scan_locks[market].locked():
+        logger.info("[Scanner/%s] Scan läuft bereits — übersprungen", exchange.name)
+        return []
+
+    async with _scan_locks[market]:
+     return await _run_scan_inner(exchange, symbols, stake_amount, max_positions, notify,
+                                  market, mkt_str)
+
+
+async def _run_scan_inner(
+    exchange: BaseExchange,
+    symbols: list[str],
+    stake_amount: float,
+    max_positions: int,
+    notify: Notifier | None,
+    market: str,
+    mkt_str: str,
+) -> list[str]:
     if not exchange.is_market_open():
         logger.info("[Scanner/%s] Markt geschlossen — übersprungen", exchange.name)
         return []
