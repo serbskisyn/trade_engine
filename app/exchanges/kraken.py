@@ -91,15 +91,24 @@ class KrakenExchange(BaseExchange):
             logger.warning("Kraken order failed for %s: %s", symbol, e)
             return None
 
-    async def close_position(self, symbol: str) -> bool:
+    async def close_position(self, symbol: str, side: str = "long", qty: float | None = None) -> bool:
         try:
-            positions = self.get_positions()
-            if symbol not in positions:
-                return False
-            qty = float(positions[symbol]["qty"])
-            self._ex.create_order(symbol=symbol, type="market", side="sell", amount=qty)
-            logger.info("Kraken position closed: %s", symbol)
-            return True
+            if side == "short":
+                if qty is None:
+                    logger.warning("Kraken close_position: qty required for short %s", symbol)
+                    return False
+                self._ex.create_order(symbol=symbol, type="market", side="buy",
+                                      amount=qty, params={"leverage": 2})
+                logger.info("Kraken short closed: %s qty=%.4f", symbol, qty)
+                return True
+            else:
+                positions = self.get_positions()
+                if symbol not in positions:
+                    return False
+                actual_qty = float(positions[symbol]["qty"])
+                self._ex.create_order(symbol=symbol, type="market", side="sell", amount=actual_qty)
+                logger.info("Kraken position closed: %s", symbol)
+                return True
         except Exception as e:
             logger.warning("Kraken close_position failed for %s: %s", symbol, e)
             return False

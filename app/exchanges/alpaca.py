@@ -80,7 +80,7 @@ class AlpacaExchange(BaseExchange):
             logger.warning("Alpaca order failed for %s: %s", symbol, e)
             return None
 
-    async def close_position(self, symbol: str) -> bool:
+    async def close_position(self, symbol: str, side: str = "long", qty: float | None = None) -> bool:
         try:
             self._trading.close_position(symbol)
             logger.info("Alpaca position closed: %s", symbol)

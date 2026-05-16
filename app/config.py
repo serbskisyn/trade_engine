@@ -23,7 +23,7 @@ KRAKEN_PAIRS: list[str] = [
         "UNI/BTC,AAVE/BTC,ETC/BTC,TRX/BTC"
     ).split(",") if p.strip()
 ]
-KRAKEN_ALLOW_SHORTS: bool = os.getenv("KRAKEN_ALLOW_SHORTS", "true").lower() == "true"
+KRAKEN_ALLOW_SHORTS: bool = os.getenv("KRAKEN_ALLOW_SHORTS", "false").lower() == "true"
 
 # ── Alpaca (US-Aktien) ────────────────────────────────────────────────────────
 ALPACA_API_KEY:       str   = os.getenv("ALPACA_API_KEY", "")

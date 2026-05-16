@@ -195,7 +195,8 @@ async def _execute_scan(
 
         # Stop-Loss / Trailing ausführen
         if res.get("action") == "stop":
-            ok = await exchange.close_position(symbol)
+            ok = await exchange.close_position(symbol, side=pos_side or "long",
+                                               qty=float(position.get("qty", 0)) if position else None)
             if ok:
                 result = await tm.close_position(market, symbol, price, res["stop_reason"])
                 if result:
@@ -223,7 +224,8 @@ async def _execute_scan(
                 (pos_side != "short" and signal == "sell" and conf >= SELL_CONFIDENCE)
             )
             if exit_triggered:
-                ok = await exchange.close_position(symbol)
+                ok = await exchange.close_position(symbol, side=pos_side,
+                                                   qty=float(position.get("qty", 0)))
                 if ok:
                     tag    = "buy" if pos_side == "short" else "sell"
                     result = await tm.close_position(market, symbol, price, f"llm_{tag}: {reason}")

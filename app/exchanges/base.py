@@ -39,7 +39,7 @@ class BaseExchange(ABC):
         """amount = USD for stocks, base-currency units for crypto. short=True for margin shorts."""
 
     @abstractmethod
-    async def close_position(self, symbol: str) -> bool: ...
+    async def close_position(self, symbol: str, side: str = "long", qty: float | None = None) -> bool: ...
 
     @abstractmethod
     async def fetch_trend_bars(self, symbol: str, limit: int = 50) -> pd.DataFrame | None:
