@@ -103,7 +103,7 @@ async def close_position(market: Market, symbol: str, exit_price: float, reason:
                datetime.now(timezone.utc).isoformat()))
         await conn.execute("DELETE FROM positions WHERE market=? AND symbol=?", (market, symbol))
         await conn.commit()
-        logger.info("[TradeManager] Closed %s %s %s @ %.4f | P&L: %+.2f%% reason=%s",
+        logger.info("[TradeManager] Closed %s %s %s @ %.8f | P&L: %+.2f%% reason=%s",
                     pos_side.upper(), market, symbol, exit_price, pl_pct, reason)
         return {"symbol": symbol, "pl_pct": pl_pct, "pl_abs": pl_abs,
                 "reason": reason, "side": pos_side}
