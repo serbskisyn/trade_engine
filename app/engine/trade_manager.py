@@ -231,7 +231,7 @@ async def get_trade_stats() -> dict:
         total, total_pl, avg_pct, wins, losses = row
         return {
             "total_trades": total or 0,
-            "total_pl":     round(total_pl or 0, 4),
+            "total_pl":     round(total_pl or 0, 8),
             "avg_pl_pct":   round(avg_pct or 0, 2),
             "wins":         wins or 0,
             "losses":       losses or 0,
