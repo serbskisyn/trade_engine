@@ -24,7 +24,7 @@ def set_notify(fn):
 
 
 def _auth(secret: str):
-    if API_SECRET and secret != API_SECRET:
+    if secret != API_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 

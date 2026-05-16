@@ -74,3 +74,8 @@ def validate():
     missing = [k for k, v in {"OPENROUTER_API_KEY": OPENROUTER_API_KEY}.items() if not v]
     if missing:
         raise ValueError(f"Fehlende Umgebungsvariablen: {', '.join(missing)}")
+    if not API_SECRET or API_SECRET == "change_me":
+        raise ValueError(
+            "API_SECRET fehlt oder steht auf 'change_me' — "
+            "ohne starkes Secret ist die Trade Engine offen erreichbar."
+        )
