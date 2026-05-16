@@ -3,7 +3,7 @@ import logging
 import pandas as pd
 from alpaca.data import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
@@ -30,7 +30,8 @@ class AlpacaExchange(BaseExchange):
 
     async def fetch_bars(self, symbol: str, limit: int = 100) -> pd.DataFrame | None:
         try:
-            req  = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Minute * 5, limit=limit)
+            req  = StockBarsRequest(symbol_or_symbols=symbol,
+                                    timeframe=TimeFrame(5, TimeFrameUnit.Minute), limit=limit)
             bars = self._data.get_stock_bars(req)
             df   = bars.df
             if hasattr(df.index, "levels"):
@@ -91,7 +92,6 @@ class AlpacaExchange(BaseExchange):
 
     async def fetch_trend_bars(self, symbol: str, limit: int = 50) -> pd.DataFrame | None:
         try:
-            from alpaca.data.timeframe import TimeFrameUnit
             req  = StockBarsRequest(symbol_or_symbols=symbol,
                                     timeframe=TimeFrame(1, TimeFrameUnit.Hour), limit=limit)
             bars = self._data.get_stock_bars(req)
