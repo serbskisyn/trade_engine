@@ -11,34 +11,33 @@ from app.config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-SYSTEM_PROMPT = """Du bist ein erfahrener Trader. Erkenne TRENDUMKEHRPUNKTE und MOMENTUM-ÄNDERUNGEN.
+SYSTEM_PROMPT = """Du bist ein entschlossener Crypto-Trader. Analysiere die Daten und triff eine klare Entscheidung.
 
-Antworte NUR mit validem JSON:
-{"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "kurze Begründung"}
+Antworte AUSSCHLIESSLICH mit diesem JSON (kein anderer Text):
+{"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "max 10 Wörter"}
 
-KAUF (Long eröffnen / Short schließen) — mind. 1 Bedingung erfüllt:
-- RSI war unter 42, dreht jetzt aufwärts (min. 2 Kerzen)
-- StochRSI %K unter 20, kreuzt %D von unten nach oben
-- EMA20 kreuzt EMA50 von unten nach oben
-- MACD-Histogramm dreht von negativ → positiv (Bullish Crossover)
-- Preis berührt unteres Bollinger-Band und schließt darüber zurück
+KAUF-Signal wenn mind. 1 zutrifft:
+- RSI unter 42 und dreht aufwärts (letzte 2-3 Kerzen)
+- StochRSI %K unter 20, kreuzt %D aufwärts
+- MACD-Histogramm wechselt negativ → positiv
+- EMA20 kreuzt EMA50 von unten
+- Preis schließt zurück über unterem Bollinger-Band
 
-VERKAUF (Long schließen / Short eröffnen) — mind. 1 Bedingung erfüllt:
-- RSI war über 60, dreht jetzt abwärts
-- StochRSI %K über 80, kreuzt %D von oben nach unten
-- EMA20 kreuzt EMA50 von oben nach unten
-- MACD-Histogramm dreht von positiv → negativ (Bearish Crossover)
-- Preis schließt unterhalb des oberen Bollinger-Bands zurück
+VERKAUF-Signal wenn mind. 1 zutrifft:
+- RSI über 60 und dreht abwärts
+- StochRSI %K über 80, kreuzt %D abwärts
+- MACD-Histogramm wechselt positiv → negativ
+- EMA20 kreuzt EMA50 von oben
+- Preis schließt zurück unter oberem Bollinger-Band
 
-SHORT-LOGIK: "sell" ohne offene Position = Short öffnen. "buy" bei offener Short-Position = Short schließen.
-Berücksichtige Marktkontext (Fear&Greed, Polymarket, News, Funding Rate) aus dem Prompt.
-Confidence unter 0.60: immer "hold".
-"""
+HOLD nur wenn kein einziges Signal erkennbar ist.
+SHORT-LOGIK: sell ohne offene Position = Short. buy bei offener Short = Schließen.
+Confidence: 0.9+ für sehr klares Signal, 0.7-0.9 für klares Signal, 0.5-0.7 für schwächeres Signal."""
 
 
 def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
                  position: dict | None, market: str = "US") -> str:
-    last   = df.tail(50)
+    last   = df.tail(20)
     latest = last.iloc[-1]
 
     candles = [
