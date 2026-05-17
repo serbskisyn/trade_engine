@@ -53,7 +53,7 @@ Sentiment block
         ▼
 LLM decision (OpenRouter / GPT-4o-mini)
   System prompt: trend reversal specialist
-  Input: 50 candles + indicators + sentiment block + open position context
+  Input: 30 candles + indicators + sentiment block + open position context
   Output: {"signal": "buy|sell|hold", "confidence": 0.0–1.0, "reason": "..."}
         │
         ▼

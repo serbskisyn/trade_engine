@@ -37,7 +37,7 @@ Confidence: 0.9+ für sehr klares Signal, 0.7-0.9 für klares Signal, 0.5-0.7 f�
 
 def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
                  position: dict | None, market: str = "US") -> str:
-    last   = df.tail(20)
+    last   = df.tail(30)
     latest = last.iloc[-1]
 
     candles = [
@@ -95,7 +95,7 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
         f"MOM(4): {mom:+.2f}%"
         f"{pos_ctx}\n\n"
         f"{sentiment_block}\n\n"
-        f"Letzte 50 Kerzen (älteste zuerst):\n"
+        f"Letzte 30 Kerzen (älteste zuerst):\n"
         + "\n".join(candles)
         + "\n\nUmkehrsignal vorhanden? Deine Entscheidung:"
     )

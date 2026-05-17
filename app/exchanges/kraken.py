@@ -122,12 +122,15 @@ class KrakenExchange(BaseExchange):
                 logger.info("Kraken short closed: %s qty=%.4f", symbol, qty)
                 return True
             else:
-                positions = await self.get_positions()
-                if symbol not in positions:
-                    return False
-                actual_qty = float(positions[symbol]["qty"])
+                if qty is not None:
+                    actual_qty = qty
+                else:
+                    positions = await self.get_positions()
+                    if symbol not in positions:
+                        return False
+                    actual_qty = float(positions[symbol]["qty"])
                 await _run(self._ex.create_order, symbol, "market", "sell", actual_qty)
-                logger.info("Kraken position closed: %s", symbol)
+                logger.info("Kraken position closed: %s qty=%.4f", symbol, actual_qty)
                 return True
         except Exception as e:
             logger.warning("Kraken close_position failed for %s: %s", symbol, e)
