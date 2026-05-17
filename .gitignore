@@ -1,7 +1,36 @@
+# Secrets
 .env
-.venv/
-venv/
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.pyc
-data/
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# Test / Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# SQLite
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Daten / Logs
+data/
+logs/
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store

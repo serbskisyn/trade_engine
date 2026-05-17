@@ -1,8 +1,8 @@
-python-dotenv
-httpx
-pandas
-fastapi
-uvicorn[standard]
-ccxt
-alpaca-py
-aiosqlite
+python-dotenv==1.2.2
+httpx==0.28.1
+pandas==3.0.3
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+ccxt==4.5.54
+alpaca-py==0.43.4
+aiosqlite==0.22.1
