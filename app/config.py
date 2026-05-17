@@ -23,7 +23,10 @@ KRAKEN_PAIRS: list[str] = [
         "UNI/BTC,TRX/BTC"
     ).split(",") if p.strip()
 ]
-KRAKEN_ALLOW_SHORTS: bool = os.getenv("KRAKEN_ALLOW_SHORTS", "false").lower() == "true"
+KRAKEN_ALLOW_SHORTS:   bool = os.getenv("KRAKEN_ALLOW_SHORTS", "false").lower() == "true"
+# Limit-Order-Strategie: warte TIMEOUT Sekunden auf Fill, dann Market-Fallback.
+# Maker-Fee (0.08%) statt Taker-Fee (0.16%) spart bei jedem Round-Trip 0.16%.
+KRAKEN_LIMIT_TIMEOUT: int  = int(os.getenv("KRAKEN_LIMIT_TIMEOUT", "15"))
 
 # ── Alpaca (US-Aktien) ────────────────────────────────────────────────────────
 ALPACA_API_KEY:       str   = os.getenv("ALPACA_API_KEY", "")
