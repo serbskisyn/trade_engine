@@ -1,17 +1,19 @@
 """
 Trade Manager — persists open positions in SQLite, enforces stop-loss and trailing stop.
-Stop-loss:      close if unrealized loss > STOP_LOSS_PCT (default 2%)
-Trailing stop:  activate when profit > TRAILING_ACTIVATE_PCT (default 2%),
-                then close when price drops > TRAILING_TRAIL_PCT (default 1%) from peak.
+Stop-loss:      close if unrealized loss exceeds market-specific threshold
+                (crypto default 3%, stocks default 1.5%).
+Trailing stop:  activate when profit exceeds market-specific threshold,
+                then close when price drops > trail-pct from peak.
 """
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Literal
 
 import aiosqlite
 
+from app import config
 from app.config import (DB_PATH, STOP_LOSS_PCT, TRAILING_ACTIVATE_PCT, TRAILING_TRAIL_PCT,
                         CIRCUIT_BREAKER_MAX_LOSS_BTC, CIRCUIT_BREAKER_WINDOW)
 
@@ -19,8 +21,33 @@ logger = logging.getLogger(__name__)
 
 Market = Literal["crypto", "stocks"]
 
-# ── Circuit Breaker state ─────────────────────────────────────────────────────
-_circuit_breaker_reset_until: datetime | None = None
+
+# ── Pro-Markt Stop-Parameter ──────────────────────────────────────────────────
+
+def _stop_loss_pct(market: Market) -> float:
+    """Look up via module so test-monkeypatch auf trade_manager-Konstanten greift."""
+    if market == "crypto":
+        return getattr(config, "STOP_LOSS_PCT_CRYPTO", STOP_LOSS_PCT)
+    if market == "stocks":
+        return getattr(config, "STOP_LOSS_PCT_STOCKS", STOP_LOSS_PCT)
+    return STOP_LOSS_PCT
+
+
+def _trailing_activate_pct(market: Market) -> float:
+    if market == "crypto":
+        return getattr(config, "TRAILING_ACTIVATE_PCT_CRYPTO", TRAILING_ACTIVATE_PCT)
+    if market == "stocks":
+        return getattr(config, "TRAILING_ACTIVATE_PCT_STOCKS", TRAILING_ACTIVATE_PCT)
+    return TRAILING_ACTIVATE_PCT
+
+
+def _trailing_trail_pct(market: Market) -> float:
+    if market == "crypto":
+        return getattr(config, "TRAILING_TRAIL_PCT_CRYPTO", TRAILING_TRAIL_PCT)
+    if market == "stocks":
+        return getattr(config, "TRAILING_TRAIL_PCT_STOCKS", TRAILING_TRAIL_PCT)
+    return TRAILING_TRAIL_PCT
+
 
 # ── Singleton DB Connection ───────────────────────────────────────────────────
 _conn: aiosqlite.Connection | None = None
@@ -164,12 +191,13 @@ async def update_peak(market: Market, symbol: str, current_price: float) -> None
     if not row:
         return
     peak_price, entry_price, pos_side = row
+    activate_pct = _trailing_activate_pct(market)
     if pos_side == "short":
         # For shorts: peak_price tracks the trough (minimum seen)
-        trailing_active = int((entry_price - current_price) / entry_price >= TRAILING_ACTIVATE_PCT)
+        trailing_active = int((entry_price - current_price) / entry_price >= activate_pct)
         new_peak        = min(peak_price, current_price)
     else:
-        trailing_active = int((current_price - entry_price) / entry_price >= TRAILING_ACTIVATE_PCT)
+        trailing_active = int((current_price - entry_price) / entry_price >= activate_pct)
         new_peak        = max(peak_price, current_price)
     await conn.execute(
         "UPDATE positions SET peak_price=?, trailing_active=? WHERE market=? AND symbol=?",
@@ -195,21 +223,24 @@ async def check_stops(market: Market, symbol: str, current_price: float,
 
     await update_peak(market, symbol, current_price)
 
+    stop_pct  = _stop_loss_pct(market)
+    trail_pct = _trailing_trail_pct(market)
+
     if pos_side == "short":
         loss_pct = (current_price - entry_price) / entry_price
-        if loss_pct >= STOP_LOSS_PCT:
+        if loss_pct >= stop_pct:
             return True, f"stop_loss_short ({loss_pct*100:.2f}%)"
         if trailing_active and peak_price > 0:
             rise_from_trough = (current_price - peak_price) / peak_price
-            if rise_from_trough >= TRAILING_TRAIL_PCT:
+            if rise_from_trough >= trail_pct:
                 return True, f"trailing_stop_short (trough={peak_price:.4f}, rise={rise_from_trough*100:.2f}%)"
     else:
         loss_pct = (entry_price - current_price) / entry_price
-        if loss_pct >= STOP_LOSS_PCT:
+        if loss_pct >= stop_pct:
             return True, f"stop_loss ({loss_pct*100:.2f}%)"
         if trailing_active and peak_price > 0:
             drop_from_peak = (peak_price - current_price) / peak_price
-            if drop_from_peak >= TRAILING_TRAIL_PCT:
+            if drop_from_peak >= trail_pct:
                 return True, f"trailing_stop (peak={peak_price:.4f}, drop={drop_from_peak*100:.2f}%)"
 
     return False, ""
@@ -248,27 +279,33 @@ async def get_trade_stats() -> dict:
 
 # ── Circuit Breaker ───────────────────────────────────────────────────────────
 
-async def check_circuit_breaker() -> tuple[bool, str]:
-    """Returns (triggered, reason). Checks P&L sum of last N trades against threshold."""
-    global _circuit_breaker_reset_until
-    if _circuit_breaker_reset_until and datetime.now(timezone.utc) < _circuit_breaker_reset_until:
-        return False, ""
+async def _recent_pl_sum(window: int) -> float:
+    """Summe der pl_abs der letzten N Trades aus trade_log."""
     conn = await _get_db()
     async with conn.execute("""
         SELECT SUM(pl_abs) FROM (
             SELECT pl_abs FROM trade_log ORDER BY closed_at DESC LIMIT ?
         )
-    """, (CIRCUIT_BREAKER_WINDOW,)) as cur:
+    """, (window,)) as cur:
         row = await cur.fetchone()
-    recent_pl = float(row[0] or 0)
-    if recent_pl < CIRCUIT_BREAKER_MAX_LOSS_BTC:
-        return True, (f"{recent_pl:.6f} BTC Verlust in letzten "
-                      f"{CIRCUIT_BREAKER_WINDOW} Trades (Limit: {CIRCUIT_BREAKER_MAX_LOSS_BTC} BTC)")
-    return False, ""
+    return float(row[0] or 0)
+
+
+# Singleton — wird beim Import gebaut, P&L kommt aus dieser Modul-Funktion.
+from app.engine.circuit_breaker import CircuitBreaker  # noqa: E402
+
+circuit_breaker = CircuitBreaker(
+    max_loss=CIRCUIT_BREAKER_MAX_LOSS_BTC,
+    window=CIRCUIT_BREAKER_WINDOW,
+    recent_pl_provider=_recent_pl_sum,
+)
+
+
+async def check_circuit_breaker() -> tuple[bool, str]:
+    """Backward-compat-Wrapper für routes.py / scanner.py."""
+    return await circuit_breaker.check()
 
 
 def reset_circuit_breaker(hours: int = 1) -> None:
-    """Override circuit breaker for `hours` hours."""
-    global _circuit_breaker_reset_until
-    _circuit_breaker_reset_until = datetime.now(timezone.utc) + timedelta(hours=hours)
-    logger.warning("[CircuitBreaker] Manuell zurückgesetzt für %d Stunde(n)", hours)
+    """Backward-compat-Wrapper für routes.py."""
+    circuit_breaker.reset(hours=hours)

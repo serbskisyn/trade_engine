@@ -45,9 +45,18 @@ ALPACA_SYMBOLS: list[str] = [
 BUY_CONFIDENCE:   float = float(os.getenv("BUY_CONFIDENCE",   "0.60"))
 SELL_CONFIDENCE:  float = float(os.getenv("SELL_CONFIDENCE",  "0.60"))
 EXIT_CONFIDENCE:  float = float(os.getenv("EXIT_CONFIDENCE",  "0.68"))  # höher als Entry
-STOP_LOSS_PCT:   float = float(os.getenv("STOP_LOSS_PCT",   "0.02"))
-TRAILING_ACTIVATE_PCT: float = float(os.getenv("TRAILING_ACTIVATE_PCT", "0.02"))
-TRAILING_TRAIL_PCT:    float = float(os.getenv("TRAILING_TRAIL_PCT",    "0.01"))
+
+# Pro-Markt Stops — Crypto volatiler (3%), Stocks enger (1.5%).
+# STOP_LOSS_PCT bleibt als globaler Fallback für ältere Tests / Legacy.
+STOP_LOSS_PCT:         float = float(os.getenv("STOP_LOSS_PCT",         "0.02"))
+STOP_LOSS_PCT_CRYPTO:  float = float(os.getenv("STOP_LOSS_PCT_CRYPTO",  "0.03"))
+STOP_LOSS_PCT_STOCKS:  float = float(os.getenv("STOP_LOSS_PCT_STOCKS",  "0.015"))
+TRAILING_ACTIVATE_PCT:        float = float(os.getenv("TRAILING_ACTIVATE_PCT",        "0.02"))
+TRAILING_ACTIVATE_PCT_CRYPTO: float = float(os.getenv("TRAILING_ACTIVATE_PCT_CRYPTO", "0.03"))
+TRAILING_ACTIVATE_PCT_STOCKS: float = float(os.getenv("TRAILING_ACTIVATE_PCT_STOCKS", "0.015"))
+TRAILING_TRAIL_PCT:           float = float(os.getenv("TRAILING_TRAIL_PCT",           "0.01"))
+TRAILING_TRAIL_PCT_CRYPTO:    float = float(os.getenv("TRAILING_TRAIL_PCT_CRYPTO",    "0.015"))
+TRAILING_TRAIL_PCT_STOCKS:    float = float(os.getenv("TRAILING_TRAIL_PCT_STOCKS",    "0.008"))
 MIN_HOLD_CANDLES: int = int(os.getenv("MIN_HOLD_CANDLES", "2"))
 MAX_HOLD_CANDLES: int = int(os.getenv("MAX_HOLD_CANDLES", "48"))  # 4h auf 5m-Timeframe
 
