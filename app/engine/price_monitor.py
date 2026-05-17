@@ -8,7 +8,7 @@ import logging
 
 from app.config import KRAKEN_API_KEY, ALPACA_API_KEY
 from app.engine import trade_manager as tm
-from app.engine.scanner import Notifier
+from app.engine.scanner import Notifier, _fmt_pl
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,12 @@ async def _check_market(exchange, market: str, notify: Notifier | None) -> None:
             if ok:
                 result = await tm.close_position(market, symbol, price, reason)
                 if result:
-                    sign = "+" if result["pl_pct"] >= 0 else ""
-                    msg  = (f"🛑 *Stop ausgelöst*\n"
-                            f"`{symbol}` {sign}{result['pl_pct']:.2f}% | {reason}")
+                    sign   = "+" if result["pl_pct"] >= 0 else ""
+                    pl_str = _fmt_pl(market, sign, result["pl_abs"])
+                    name   = exchange.name.capitalize()
+                    msg    = (f"🛑 *{name} Stop*\n"
+                              f"`{symbol}` {sign}{result['pl_pct']:.2f}% ({pl_str})\n"
+                              f"Grund: {reason}")
                     logger.info("[PriceMonitor] %s", msg.replace("*", "").replace("`", ""))
                     if notify:
                         await notify(msg)

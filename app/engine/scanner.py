@@ -25,6 +25,14 @@ Notifier = Callable[[str], Awaitable[None]]
 _scan_locks: dict[str, asyncio.Lock] = {}
 
 
+def _fmt_price(market: str, price: float) -> str:
+    return f"`${price:.2f}`" if market == "stocks" else f"`{price:.8f} BTC`"
+
+
+def _fmt_pl(market: str, sign: str, pl_abs: float) -> str:
+    return f"{sign}${pl_abs:.2f}" if market == "stocks" else f"{sign}{pl_abs:.6f} BTC"
+
+
 def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     """
     Fast pre-filter before LLM. Returns (long_candidate, short_candidate).
@@ -244,9 +252,11 @@ async def _execute_scan(
             if ok:
                 result = await tm.close_position(market, symbol, price, res["stop_reason"])
                 if result:
-                    sign = "+" if result["pl_pct"] >= 0 else ""
-                    msg  = (f"🛑 *{exchange.name.capitalize()} Exit*\n"
-                            f"`{symbol}` {sign}{result['pl_pct']:.2f}% | {res['stop_reason']}")
+                    sign   = "+" if result["pl_pct"] >= 0 else ""
+                    pl_str = _fmt_pl(market, sign, result["pl_abs"])
+                    msg    = (f"🛑 *{exchange.name.capitalize()} Stop*\n"
+                              f"`{symbol}` {sign}{result['pl_pct']:.2f}% ({pl_str})\n"
+                              f"Grund: {res['stop_reason']}")
                     actions.append(msg)
                     if notify:
                         await notify(msg)
@@ -274,12 +284,12 @@ async def _execute_scan(
                     tag    = "buy" if pos_side == "short" else "sell"
                     result = await tm.close_position(market, symbol, price, f"llm_{tag}: {reason}")
                     if result:
-                        sign  = "+" if result["pl_pct"] >= 0 else ""
-                        label = "Short-Exit" if pos_side == "short" else "Verkauf"
-                        msg   = (f"📤 *{exchange.name.capitalize()} {label}*\n"
-                                 f"`{symbol}` {sign}{result['pl_pct']:.2f}% "
-                                 f"({sign}${result['pl_abs']:.4f} BTC)\n"
-                                 f"Grund: {reason}")
+                        sign   = "+" if result["pl_pct"] >= 0 else ""
+                        label  = "Short-Exit" if pos_side == "short" else "Verkauf"
+                        pl_str = _fmt_pl(market, sign, result["pl_abs"])
+                        msg    = (f"📤 *{exchange.name.capitalize()} {label}*\n"
+                                  f"`{symbol}` {sign}{result['pl_pct']:.2f}% ({pl_str})\n"
+                                  f"Grund: {reason}")
                         actions.append(msg)
                         if notify:
                             await notify(msg)
@@ -299,9 +309,10 @@ async def _execute_scan(
                 if order:
                     open_count += 1
                     await tm.open_position(market, symbol, order.price, order.qty, side="long")
-                    vol_info = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
+                    vol_info  = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
+                    price_str = _fmt_price(market, order.price)
                     msg = (f"🟢 *{exchange.name.capitalize()} Long*\n"
-                           f"`{symbol}` @ `{order.price:.8f} BTC`\n"
+                           f"`{symbol}` @ {price_str}\n"
                            f"Conf: {conf:.2f} | {reason}{vol_info}")
                     actions.append(msg)
                     if notify:
@@ -312,9 +323,10 @@ async def _execute_scan(
                 if order:
                     open_count += 1
                     await tm.open_position(market, symbol, order.price, order.qty, side="short")
-                    vol_info = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
+                    vol_info  = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
+                    price_str = _fmt_price(market, order.price)
                     msg = (f"🔴 *{exchange.name.capitalize()} Short*\n"
-                           f"`{symbol}` @ `{order.price:.8f} BTC`\n"
+                           f"`{symbol}` @ {price_str}\n"
                            f"Conf: {conf:.2f} | {reason}{vol_info}")
                     actions.append(msg)
                     if notify:
