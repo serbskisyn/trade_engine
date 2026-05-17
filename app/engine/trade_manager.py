@@ -156,7 +156,8 @@ async def close_position(market: Market, symbol: str, exit_price: float, reason:
     logger.info("[TradeManager] Closed %s %s %s @ %.8f | P&L: %+.2f%% reason=%s",
                 pos_side.upper(), market, symbol, exit_price, pl_pct, reason)
     return {"symbol": symbol, "pl_pct": pl_pct, "pl_abs": pl_abs,
-            "reason": reason, "side": pos_side}
+            "reason": reason, "side": pos_side,
+            "entry_price": entry_price, "exit_price": exit_price, "qty": qty}
 
 
 async def get_open_positions(market: Market | None = None) -> list[dict]:

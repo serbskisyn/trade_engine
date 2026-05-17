@@ -12,7 +12,8 @@ from typing import Callable, Awaitable
 import pandas as pd
 
 from app.config import (BUY_CONFIDENCE, SELL_CONFIDENCE, EXIT_CONFIDENCE,
-                        MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING)
+                        MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
+                        KRAKEN_FEE_MAKER)
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -31,6 +32,19 @@ def _fmt_price(market: str, price: float) -> str:
 
 def _fmt_pl(market: str, sign: str, pl_abs: float) -> str:
     return f"{sign}${pl_abs:.2f}" if market == "stocks" else f"{sign}{pl_abs:.6f} BTC"
+
+
+def _fmt_pl_with_fee(market: str, result: dict) -> str:
+    """Brutto-P&L + Netto-P&L nach Gebühren in Klammern (nur Crypto)."""
+    sign   = "+" if result["pl_abs"] >= 0 else ""
+    gross  = _fmt_pl(market, sign, result["pl_abs"])
+    if market != "crypto":
+        return gross
+    # Round-Trip-Gebühr: beide Legs × Maker-Fee
+    fee    = (result["entry_price"] + result["exit_price"]) * result["qty"] * KRAKEN_FEE_MAKER
+    net    = result["pl_abs"] - fee
+    nsign  = "+" if net >= 0 else ""
+    return f"{gross} (nach Geb. {nsign}{net:.6f} BTC)"
 
 
 def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
@@ -253,7 +267,7 @@ async def _execute_scan(
                 result = await tm.close_position(market, symbol, price, res["stop_reason"])
                 if result:
                     sign   = "+" if result["pl_pct"] >= 0 else ""
-                    pl_str = _fmt_pl(market, sign, result["pl_abs"])
+                    pl_str = _fmt_pl_with_fee(market, result)
                     msg    = (f"🛑 *{exchange.name.capitalize()} Stop*\n"
                               f"`{symbol}` {sign}{result['pl_pct']:.2f}% ({pl_str})\n"
                               f"Grund: {res['stop_reason']}")
@@ -286,7 +300,7 @@ async def _execute_scan(
                     if result:
                         sign   = "+" if result["pl_pct"] >= 0 else ""
                         label  = "Short-Exit" if pos_side == "short" else "Verkauf"
-                        pl_str = _fmt_pl(market, sign, result["pl_abs"])
+                        pl_str = _fmt_pl_with_fee(market, result)
                         msg    = (f"📤 *{exchange.name.capitalize()} {label}*\n"
                                   f"`{symbol}` {sign}{result['pl_pct']:.2f}% ({pl_str})\n"
                                   f"Grund: {reason}")

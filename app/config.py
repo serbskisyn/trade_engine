@@ -26,7 +26,8 @@ KRAKEN_PAIRS: list[str] = [
 KRAKEN_ALLOW_SHORTS:   bool = os.getenv("KRAKEN_ALLOW_SHORTS", "false").lower() == "true"
 # Limit-Order-Strategie: warte TIMEOUT Sekunden auf Fill, dann Market-Fallback.
 # Maker-Fee (0.08%) statt Taker-Fee (0.16%) spart bei jedem Round-Trip 0.16%.
-KRAKEN_LIMIT_TIMEOUT: int  = int(os.getenv("KRAKEN_LIMIT_TIMEOUT", "15"))
+KRAKEN_LIMIT_TIMEOUT: int   = int(os.getenv("KRAKEN_LIMIT_TIMEOUT", "15"))
+KRAKEN_FEE_MAKER:     float = float(os.getenv("KRAKEN_FEE_MAKER", "0.0008"))  # 0.08% pro Leg
 
 # ── Alpaca (US-Aktien) ────────────────────────────────────────────────────────
 ALPACA_API_KEY:       str   = os.getenv("ALPACA_API_KEY", "")
