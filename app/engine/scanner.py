@@ -13,7 +13,7 @@ import pandas as pd
 
 from app.config import (BUY_CONFIDENCE, SELL_CONFIDENCE, EXIT_CONFIDENCE,
                         MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
-                        KRAKEN_FEE_MAKER)
+                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT)
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -285,9 +285,21 @@ async def _execute_scan(
                     f" ({pos_side})" if position else "",
                     signal, conf)
 
-        # Exit offener Position — EXIT_CONFIDENCE verhindert frühzeitigen Exit
+        # Exit offener Position — EXIT_CONFIDENCE + Profit-Gate gegen Gebührenerosion
         if position:
-            exit_triggered = (
+            entry_p = float(position.get("entry_price", price))
+            if pos_side == "short":
+                current_pl_pct = (entry_p - price) / entry_p
+            else:
+                current_pl_pct = (price - entry_p) / entry_p
+
+            # LLM-Exit nur wenn Position ausreichend im Plus (Gebühren gedeckt + Gewinn)
+            profit_ok = current_pl_pct >= MIN_PROFIT_PCT
+            if not profit_ok:
+                logger.debug("[Scanner/%s] %s Profit-Gate: %.3f%% < %.3f%% — kein LLM-Exit",
+                             exchange.name, symbol, current_pl_pct * 100, MIN_PROFIT_PCT * 100)
+
+            exit_triggered = profit_ok and (
                 (pos_side == "short" and signal == "buy"  and conf >= EXIT_CONFIDENCE) or
                 (pos_side != "short" and signal == "sell" and conf >= EXIT_CONFIDENCE)
             )

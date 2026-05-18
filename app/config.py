@@ -61,8 +61,10 @@ TRAILING_ACTIVATE_PCT_STOCKS: float = float(os.getenv("TRAILING_ACTIVATE_PCT_STO
 TRAILING_TRAIL_PCT:           float = float(os.getenv("TRAILING_TRAIL_PCT",           "0.01"))
 TRAILING_TRAIL_PCT_CRYPTO:    float = float(os.getenv("TRAILING_TRAIL_PCT_CRYPTO",    "0.015"))
 TRAILING_TRAIL_PCT_STOCKS:    float = float(os.getenv("TRAILING_TRAIL_PCT_STOCKS",    "0.008"))
-MIN_HOLD_CANDLES: int = int(os.getenv("MIN_HOLD_CANDLES", "2"))
-MAX_HOLD_CANDLES: int = int(os.getenv("MAX_HOLD_CANDLES", "48"))  # 4h auf 5m-Timeframe
+MIN_HOLD_CANDLES:  int   = int(os.getenv("MIN_HOLD_CANDLES",  "6"))    # 30 Min Mindesthaltedauer
+MAX_HOLD_CANDLES:  int   = int(os.getenv("MAX_HOLD_CANDLES",  "96"))   # 8h Force-Close
+# LLM-Exit nur wenn P&L >= dieses Minimum (Gebühren sind 0.16% RT — Mindestgewinn 0.30%)
+MIN_PROFIT_PCT:    float = float(os.getenv("MIN_PROFIT_PCT", "0.003"))  # 0.30%
 
 # ── Circuit Breaker ────────────────────────────────────────────────────────────
 CIRCUIT_BREAKER_MAX_LOSS_BTC: float = float(os.getenv("CIRCUIT_BREAKER_MAX_LOSS_BTC", "-0.003"))
