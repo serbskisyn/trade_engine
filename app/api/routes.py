@@ -5,6 +5,7 @@ All endpoints require X-API-Secret header matching API_SECRET from config.
 import logging
 from datetime import datetime, timezone
 
+import asyncio
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.responses import JSONResponse
 
@@ -42,7 +43,7 @@ async def status(x_api_secret: str = Header(default="")):
     _auth(x_api_secret)
     crypto_pos = await tm.get_open_positions("crypto")
     stocks_pos = await tm.get_open_positions("stocks")
-    stats      = await tm.get_trade_stats()
+    stats, fee_stats = await asyncio.gather(tm.get_trade_stats(), tm.get_fee_stats())
     result = {
         "crypto": {
             "enabled":   bool(KRAKEN_API_KEY),
@@ -52,7 +53,8 @@ async def status(x_api_secret: str = Header(default="")):
             "enabled":   bool(ALPACA_API_KEY),
             "positions": stocks_pos,
         },
-        "stats": stats,
+        "stats":     stats,
+        "fee_stats": fee_stats,
     }
     if KRAKEN_API_KEY:
         try:

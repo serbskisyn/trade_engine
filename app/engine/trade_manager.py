@@ -278,6 +278,39 @@ async def get_trade_stats() -> dict:
     }
 
 
+async def get_fee_stats(fee_per_leg: float = 0.0008) -> dict:
+    """Gebühren-bereinigte Performance-Kennzahlen."""
+    from app.config import KRAKEN_FEE_MAKER
+    fee_per_leg = KRAKEN_FEE_MAKER
+    conn  = await _get_db()
+    async with conn.execute(
+        "SELECT pl_abs, entry_price, exit_price, qty FROM trade_log"
+    ) as cur:
+        rows = await cur.fetchall()
+    if not rows:
+        return {}
+
+    net_vals   = [pl - (ep + xp) * qty * fee_per_leg for pl, ep, xp, qty in rows]
+    fee_vals   = [(ep + xp) * qty * fee_per_leg       for pl, ep, xp, qty in rows]
+    gross_vals = [pl                                   for pl, ep, xp, qty in rows]
+
+    wins_net  = [v for v in net_vals if v > 0]
+    loss_net  = [v for v in net_vals if v <= 0]
+    avg_w     = sum(wins_net) / len(wins_net) if wins_net else 0.0
+    avg_l     = sum(loss_net) / len(loss_net) if loss_net else 0.0
+    payoff    = round(avg_w / abs(avg_l), 2) if avg_l != 0 else None
+    be_wr     = round(1 / (1 + avg_w / abs(avg_l)) * 100, 1) if avg_l != 0 and avg_w > 0 else None
+
+    return {
+        "gross_pl":       round(sum(gross_vals), 8),
+        "total_fees":     round(sum(fee_vals),   8),
+        "net_pl":         round(sum(net_vals),   8),
+        "avg_net_trade":  round(sum(net_vals) / len(net_vals), 8),
+        "payoff_ratio":   payoff,
+        "breakeven_wr":   be_wr,
+    }
+
+
 # ── Circuit Breaker ───────────────────────────────────────────────────────────
 
 async def _recent_pl_sum(window: int) -> float:
