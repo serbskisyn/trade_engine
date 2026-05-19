@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 Notifier = Callable[[str], Awaitable[None]]
 
 _scan_locks: dict[str, asyncio.Lock] = {}
+_cb_last_notified: dict[str, float] = {}  # exchange_name → monotonic timestamp
+_CB_NOTIFY_COOLDOWN = 3600  # max. 1× pro Stunde
 
 
 def _fmt_price(market: str, price: float) -> str:
@@ -230,7 +232,9 @@ async def _execute_scan(
     cb_broken, cb_reason = await tm.check_circuit_breaker()
     if cb_broken:
         logger.warning("[Scanner/%s] ⚡ Circuit Breaker aktiv: %s", exchange.name, cb_reason)
-        if notify:
+        last = _cb_last_notified.get(exchange.name, 0)
+        if notify and (time.monotonic() - last) > _CB_NOTIFY_COOLDOWN:
+            _cb_last_notified[exchange.name] = time.monotonic()
             await notify(f"⚡ *Circuit Breaker aktiv* ({exchange.name})\n`{cb_reason}`\nNeue Entries gesperrt.")
 
     # Candle counters für offene Positionen parallel hochzählen

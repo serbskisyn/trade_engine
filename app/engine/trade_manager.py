@@ -314,11 +314,11 @@ async def get_fee_stats(fee_per_leg: float = 0.0008) -> dict:
 # ── Circuit Breaker ───────────────────────────────────────────────────────────
 
 async def _recent_pl_sum(window: int) -> float:
-    """Summe der pl_abs der letzten N Trades aus trade_log."""
+    """Summe der crypto pl_abs (BTC) der letzten N Trades — stocks in USD explizit ausgeschlossen."""
     conn = await _get_db()
     async with conn.execute("""
         SELECT SUM(pl_abs) FROM (
-            SELECT pl_abs FROM trade_log ORDER BY closed_at DESC LIMIT ?
+            SELECT pl_abs FROM trade_log WHERE market='crypto' ORDER BY closed_at DESC LIMIT ?
         )
     """, (window,)) as cur:
         row = await cur.fetchone()
