@@ -70,13 +70,16 @@ class AlpacaExchange(BaseExchange):
             if hasattr(df.index, "levels"):
                 df = df.xs(symbol, level=0)
             price = float(df["close"].iloc[-1])
-            qty   = max(1, int(amount / price))
 
-            alpaca_side = OrderSide.BUY if side == Side.BUY else OrderSide.SELL
+            alpaca_side  = OrderSide.BUY if side == Side.BUY else OrderSide.SELL
+            notional_usd = round(amount, 2)  # Dollar-Betrag statt ganzer Aktien
             order = self._trading.submit_order(MarketOrderRequest(
-                symbol=symbol, qty=qty, side=alpaca_side, time_in_force=TimeInForce.DAY,
+                symbol=symbol, notional=notional_usd, side=alpaca_side,
+                time_in_force=TimeInForce.DAY,
             ))
-            return OrderResult(symbol=symbol, side=side, qty=qty, price=price, order_id=str(order.id))
+            fractional_qty = round(amount / price, 6)
+            return OrderResult(symbol=symbol, side=side, qty=fractional_qty,
+                               price=price, order_id=str(order.id))
         except Exception as e:
             logger.warning("Alpaca order failed for %s: %s", symbol, e)
             return None
