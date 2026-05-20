@@ -45,6 +45,11 @@ class BaseExchange(ABC):
     async def fetch_trend_bars(self, symbol: str, limit: int = 50) -> pd.DataFrame | None:
         """Fetch 1h candles for trend direction. Returns DataFrame with ema50 column."""
 
+    async def fetch_daily_bars(self, symbol: str, limit: int = 60) -> pd.DataFrame | None:
+        """Optional: fetch 1D candles for macro trend direction. Returns DataFrame with ema50 column.
+        Default: None (daily gate disabled for exchanges that don't override)."""
+        return None
+
     @abstractmethod
     async def get_current_price(self, symbol: str) -> float | None:
         """Cheap single-price fetch — no bars, no indicators. Used by price monitor."""

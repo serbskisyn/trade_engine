@@ -18,6 +18,7 @@ from app.config import (BUY_CONFIDENCE_CRYPTO, BUY_CONFIDENCE_STOCKS,
                         EXIT_CONFIDENCE_CRYPTO, EXIT_CONFIDENCE_STOCKS,
                         REENTRY_COOLDOWN_MIN_CRYPTO, REENTRY_COOLDOWN_MIN_STOCKS,
                         STOCKS_ENTRY_CUTOFF_HOUR, STOCKS_ENTRY_CUTOFF_MINUTE,
+                        STOCKS_DAILY_TREND_GATE,
                         MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
                         KRAKEN_FEE_MAKER, MIN_PROFIT_PCT)
 from app.exchanges.base import BaseExchange, Side
@@ -120,9 +121,10 @@ async def _fetch_and_analyse(
     Returns a result dict consumed by the execution phase.
     """
     try:
-        df, trend_df = await asyncio.gather(
+        df, trend_df, daily_df = await asyncio.gather(
             exchange.fetch_bars(symbol),
             exchange.fetch_trend_bars(symbol),
+            exchange.fetch_daily_bars(symbol),
         )
         if df is None:
             return {"symbol": symbol, "skip": True}
@@ -138,7 +140,14 @@ async def _fetch_and_analyse(
             slope_pct = (ema50 - float(trend_df.iloc[-6]["ema50"])) / ema50 if ema50 else 0
             trend_clearly_down = slope_pct < -0.001
 
-        allow_long  = (not trend_clearly_down) or trend_df is None
+        # 1D macro trend gate (nur Stocks, opt-in) — blockt Long-Entries an Down-Days
+        daily_trend_down = False
+        if market == "stocks" and STOCKS_DAILY_TREND_GATE and daily_df is not None and len(daily_df) >= 50:
+            daily_close = float(daily_df.iloc[-1]["close"])
+            daily_ema50 = float(daily_df.iloc[-1]["ema50"])
+            daily_trend_down = daily_close < daily_ema50
+
+        allow_long  = ((not trend_clearly_down) or trend_df is None) and not daily_trend_down
         allow_short = (trend_clearly_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
 
         # ── Open position: check hardware stops first ─────────────────────────

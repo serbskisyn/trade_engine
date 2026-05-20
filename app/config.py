@@ -69,6 +69,10 @@ REENTRY_COOLDOWN_MIN_STOCKS: int = int(os.getenv("REENTRY_COOLDOWN_MIN_STOCKS", 
 STOCKS_ENTRY_CUTOFF_HOUR:   int = int(os.getenv("STOCKS_ENTRY_CUTOFF_HOUR",   "14"))
 STOCKS_ENTRY_CUTOFF_MINUTE: int = int(os.getenv("STOCKS_ENTRY_CUTOFF_MINUTE", "45"))
 
+# Stocks: Daily-Trend-Gate — Long-Entries nur wenn Tageskerze > EMA50(1D).
+# Blockt Falling-Knife-Käufe an Down-Days, selbst wenn 5m-Reversal-Signale stark wirken.
+STOCKS_DAILY_TREND_GATE: bool = os.getenv("STOCKS_DAILY_TREND_GATE", "true").lower() == "true"
+
 # Pro-Markt Stops — Crypto volatiler (3%), Stocks enger (1.5%).
 # STOP_LOSS_PCT bleibt als globaler Fallback für ältere Tests / Legacy.
 STOP_LOSS_PCT:         float = float(os.getenv("STOP_LOSS_PCT",         "0.02"))
