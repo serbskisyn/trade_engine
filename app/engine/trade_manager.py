@@ -247,6 +247,24 @@ async def check_stops(market: Market, symbol: str, current_price: float,
     return False, ""
 
 
+async def is_in_reentry_cooldown(market: Market, symbol: str, cooldown_minutes: int) -> bool:
+    """True wenn Symbol innerhalb der letzten `cooldown_minutes` per Stop-Loss geschlossen wurde."""
+    if cooldown_minutes <= 0:
+        return False
+    conn = await _get_db()
+    async with conn.execute("""
+        SELECT closed_at FROM trade_log
+        WHERE market=? AND symbol=? AND reason LIKE 'stop_loss%'
+        ORDER BY closed_at DESC LIMIT 1
+    """, (market, symbol)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return False
+    closed_at = datetime.fromisoformat(row[0])
+    elapsed_min = (datetime.now(timezone.utc) - closed_at).total_seconds() / 60
+    return elapsed_min < cooldown_minutes
+
+
 async def get_recent_trades(limit: int = 3) -> list[dict]:
     conn = await _get_db()
     async with conn.execute("""

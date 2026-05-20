@@ -7,11 +7,17 @@ Phase 3: trade execution (sequential to prevent double-orders)
 import asyncio
 import logging
 import time
+from datetime import datetime, time as dtime
 from typing import Callable, Awaitable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from app.config import (BUY_CONFIDENCE, SELL_CONFIDENCE, EXIT_CONFIDENCE,
+from app.config import (BUY_CONFIDENCE_CRYPTO, BUY_CONFIDENCE_STOCKS,
+                        SELL_CONFIDENCE_CRYPTO, SELL_CONFIDENCE_STOCKS,
+                        EXIT_CONFIDENCE_CRYPTO, EXIT_CONFIDENCE_STOCKS,
+                        REENTRY_COOLDOWN_MIN_CRYPTO, REENTRY_COOLDOWN_MIN_STOCKS,
+                        STOCKS_ENTRY_CUTOFF_HOUR, STOCKS_ENTRY_CUTOFF_MINUTE,
                         MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
                         KRAKEN_FEE_MAKER, MIN_PROFIT_PCT)
 from app.exchanges.base import BaseExchange, Side
@@ -23,9 +29,18 @@ logger = logging.getLogger(__name__)
 
 Notifier = Callable[[str], Awaitable[None]]
 
+_ET = ZoneInfo("America/New_York")
+
 _scan_locks: dict[str, asyncio.Lock] = {}
 _cb_last_notified: dict[str, float] = {}  # exchange_name → monotonic timestamp
 _CB_NOTIFY_COOLDOWN = 3600  # max. 1× pro Stunde
+
+
+def _stocks_entry_allowed_now() -> bool:
+    """False nach STOCKS_ENTRY_CUTOFF (default 14:45 ET) — schützt vor Late-Day-Reversal-Fails."""
+    now_et = datetime.now(_ET).time()
+    cutoff = dtime(STOCKS_ENTRY_CUTOFF_HOUR, STOCKS_ENTRY_CUTOFF_MINUTE)
+    return now_et < cutoff
 
 
 def _fmt_price(market: str, price: float) -> str:
@@ -145,6 +160,15 @@ async def _fetch_and_analyse(
                         "position": position, "pos_side": pos_side}
 
         else:
+            # Entry: stocks time-window gate (kein Entry in der letzten Stunde vor Marktschluss)
+            if market == "stocks" and not _stocks_entry_allowed_now():
+                return {"symbol": symbol, "skip": True, "reason": "stocks_entry_cutoff"}
+
+            # Entry: Re-Entry-Cooldown nach Stop-Loss
+            cooldown_min = REENTRY_COOLDOWN_MIN_STOCKS if market == "stocks" else REENTRY_COOLDOWN_MIN_CRYPTO
+            if await tm.is_in_reentry_cooldown(market, symbol, cooldown_min):
+                return {"symbol": symbol, "skip": True, "reason": "reentry_cooldown"}
+
             # Entry: trend gate
             if not allow_long and not allow_short:
                 return {"symbol": symbol, "skip": True, "reason": "trend_blocked"}
@@ -163,7 +187,7 @@ async def _fetch_and_analyse(
         loop            = asyncio.get_event_loop()
         sentiment_block = await loop.run_in_executor(None, build_sentiment_block, symbol)
         prompt     = build_prompt(symbol, df, sentiment_block, position, mkt_str)
-        llm_result = await call_llm(prompt)
+        llm_result = await call_llm(prompt, market=market)
 
         bb_upper = float(df.iloc[-1].get("bb_upper", 0))
         bb_lower = float(df.iloc[-1].get("bb_lower", 0))
@@ -228,6 +252,16 @@ async def _execute_scan(
     open_positions = {p["symbol"]: p for p in await tm.get_open_positions(market)}
     open_count     = len(open_positions)
     actions        = []
+
+    # Markt-spezifische LLM-Confidence-Schwellen
+    if market == "stocks":
+        buy_conf  = BUY_CONFIDENCE_STOCKS
+        sell_conf = SELL_CONFIDENCE_STOCKS
+        exit_conf = EXIT_CONFIDENCE_STOCKS
+    else:
+        buy_conf  = BUY_CONFIDENCE_CRYPTO
+        sell_conf = SELL_CONFIDENCE_CRYPTO
+        exit_conf = EXIT_CONFIDENCE_CRYPTO
 
     cb_broken, cb_reason = await tm.check_circuit_breaker()
     if cb_broken:
@@ -304,8 +338,8 @@ async def _execute_scan(
                              exchange.name, symbol, current_pl_pct * 100, MIN_PROFIT_PCT * 100)
 
             exit_triggered = profit_ok and (
-                (pos_side == "short" and signal == "buy"  and conf >= EXIT_CONFIDENCE) or
-                (pos_side != "short" and signal == "sell" and conf >= EXIT_CONFIDENCE)
+                (pos_side == "short" and signal == "buy"  and conf >= exit_conf) or
+                (pos_side != "short" and signal == "sell" and conf >= exit_conf)
             )
             if exit_triggered:
                 ok = await exchange.close_position(symbol, side=pos_side,
@@ -334,7 +368,7 @@ async def _execute_scan(
             vol_factor     = 1.0 / (1.0 + bb_width * BB_VOL_SCALING)
             adjusted_stake = stake_amount * vol_factor
 
-            if signal == "buy" and conf >= BUY_CONFIDENCE and allow_long:
+            if signal == "buy" and conf >= buy_conf and allow_long:
                 order = await exchange.place_order(symbol, Side.BUY, adjusted_stake)
                 if order:
                     open_count += 1
@@ -348,7 +382,7 @@ async def _execute_scan(
                     if notify:
                         await notify(msg)
 
-            elif signal == "sell" and conf >= SELL_CONFIDENCE and allow_short:
+            elif signal == "sell" and conf >= sell_conf and allow_short:
                 order = await exchange.place_order(symbol, Side.SELL, adjusted_stake, short=True)
                 if order:
                     open_count += 1

@@ -50,6 +50,25 @@ BUY_CONFIDENCE:   float = float(os.getenv("BUY_CONFIDENCE",   "0.60"))
 SELL_CONFIDENCE:  float = float(os.getenv("SELL_CONFIDENCE",  "0.60"))
 EXIT_CONFIDENCE:  float = float(os.getenv("EXIT_CONFIDENCE",  "0.68"))  # höher als Entry
 
+# Markt-spezifische Confidence-Schwellen — Stocks brauchen mehr Sicherheit als Crypto,
+# weil Aktien-Reversals häufiger Falling-Knives sind als bei mean-reverting Crypto-Pairs.
+BUY_CONFIDENCE_CRYPTO:  float = float(os.getenv("BUY_CONFIDENCE_CRYPTO",  str(BUY_CONFIDENCE)))
+BUY_CONFIDENCE_STOCKS:  float = float(os.getenv("BUY_CONFIDENCE_STOCKS",  "0.75"))
+SELL_CONFIDENCE_CRYPTO: float = float(os.getenv("SELL_CONFIDENCE_CRYPTO", str(SELL_CONFIDENCE)))
+SELL_CONFIDENCE_STOCKS: float = float(os.getenv("SELL_CONFIDENCE_STOCKS", "0.75"))
+EXIT_CONFIDENCE_CRYPTO: float = float(os.getenv("EXIT_CONFIDENCE_CRYPTO", str(EXIT_CONFIDENCE)))
+EXIT_CONFIDENCE_STOCKS: float = float(os.getenv("EXIT_CONFIDENCE_STOCKS", "0.75"))
+
+# Re-Entry-Cooldown nach Stop-Loss (Minuten — 0 = deaktiviert).
+# Stocks: 60 Min verhindert "Falling-Knife"-Doppel-Entries innerhalb 1h.
+REENTRY_COOLDOWN_MIN_CRYPTO: int = int(os.getenv("REENTRY_COOLDOWN_MIN_CRYPTO", "0"))
+REENTRY_COOLDOWN_MIN_STOCKS: int = int(os.getenv("REENTRY_COOLDOWN_MIN_STOCKS", "60"))
+
+# Stocks: Keine neuen Entries nach diesem ET-Zeitpunkt (Late-Day Mean-Reversion-Fail-Schutz).
+# Existing positions werden trotzdem weiter verwaltet (Stops/Exits).
+STOCKS_ENTRY_CUTOFF_HOUR:   int = int(os.getenv("STOCKS_ENTRY_CUTOFF_HOUR",   "14"))
+STOCKS_ENTRY_CUTOFF_MINUTE: int = int(os.getenv("STOCKS_ENTRY_CUTOFF_MINUTE", "45"))
+
 # Pro-Markt Stops — Crypto volatiler (3%), Stocks enger (1.5%).
 # STOP_LOSS_PCT bleibt als globaler Fallback für ältere Tests / Legacy.
 STOP_LOSS_PCT:         float = float(os.getenv("STOP_LOSS_PCT",         "0.02"))

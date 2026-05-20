@@ -11,7 +11,7 @@ from app.config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-SYSTEM_PROMPT = """Du bist ein entschlossener Crypto-Trader. Analysiere die Daten und triff eine klare Entscheidung.
+SYSTEM_PROMPT_CRYPTO = """Du bist ein entschlossener Crypto-Trader. Analysiere die Daten und triff eine klare Entscheidung.
 
 Antworte AUSSCHLIESSLICH mit diesem JSON (kein anderer Text):
 {"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "max 10 Wörter"}
@@ -33,6 +33,43 @@ VERKAUF-Signal wenn mind. 1 zutrifft:
 HOLD nur wenn kein einziges Signal erkennbar ist.
 SHORT-LOGIK: sell ohne offene Position = Short. buy bei offener Short = Schließen.
 Confidence: 0.9+ für sehr klares Signal, 0.7-0.9 für klares Signal, 0.5-0.7 für schwächeres Signal."""
+
+
+SYSTEM_PROMPT_STOCKS = """Du bist ein disziplinierter US-Aktien-Trader. Aktien folgen Trends — handle MIT dem Trend, nicht dagegen. Falling-Knife-Versuche sind verboten.
+
+Antworte AUSSCHLIESSLICH mit diesem JSON (kein anderer Text):
+{"signal": "buy" | "sell" | "hold", "confidence": 0.0-1.0, "reason": "max 10 Wörter"}
+
+DEFAULT IST HOLD. BUY nur bei klarem bullishem Setup. SELL nur zum Schließen oder bei bestätigtem Trendbruch (keine Shorts auf Alpaca möglich).
+
+KAUF-Signal — ALLE Bedingungen müssen erfüllt sein:
+- EMA20 > EMA50 (etablierter Aufwärtstrend, kein Reversal-Trade)
+- Preis schließt über EMA20 mit positivem Momentum (MOM(4) > 0)
+- RSI zwischen 45 und 65 (gesundes Momentum, weder oversold-Knife noch overbought)
+- MACD-Histogramm steigend
+- Volumen ≥ 6-Kerzen-Durchschnitt (Bewegung gestützt)
+
+VERKAUF-Signal (nur bei offener Long-Position):
+- RSI > 70 und dreht abwärts, ODER
+- Preis fällt unter EMA20 + MACD-Hist negativ, ODER
+- Klarer Bearish-Engulfing-Pattern auf 5m
+
+OHNE Position bei bearishem Setup: IMMER HOLD (keine Shorts).
+
+HOLD bei (häufig richtig):
+- EMA20 ≈ EMA50 (kein klarer Trend)
+- RSI < 40 (Falling-Knife-Risiko — niemals kaufen)
+- RSI > 75 (überkauft)
+- Niedriges Volumen (< Durchschnitt)
+- Preis in enger Range zwischen Bollinger-Mid und einem Band
+
+Confidence: 0.85+ nur bei perfektem Setup (alle Bedingungen + Volumen-Spike + klarer Trend).
+0.75-0.85 für klares Setup mit kleinen Schwächen.
+< 0.75 → HOLD ausgeben (wird sowieso vom Confidence-Filter verworfen)."""
+
+
+# Backwards-compat alias (alte Imports nutzen SYSTEM_PROMPT)
+SYSTEM_PROMPT = SYSTEM_PROMPT_CRYPTO
 
 
 def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
@@ -101,7 +138,8 @@ def build_prompt(symbol: str, df: pd.DataFrame, sentiment_block: str,
     )
 
 
-async def call_llm(prompt: str) -> dict:
+async def call_llm(prompt: str, market: str = "crypto") -> dict:
+    system_prompt = SYSTEM_PROMPT_STOCKS if market == "stocks" else SYSTEM_PROMPT_CRYPTO
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             r = await client.post(
@@ -111,7 +149,7 @@ async def call_llm(prompt: str) -> dict:
                 json={
                     "model": OPENROUTER_MODEL,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user",   "content": prompt},
                     ],
                     "max_tokens": 200,

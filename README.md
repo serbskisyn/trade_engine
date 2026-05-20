@@ -252,6 +252,62 @@ sudo journalctl -u trade_engine -f
 
 ---
 
+## Roadmap
+
+### Planned: Backtest Mode
+
+The Trade Engine's `BaseExchange` abstraction makes it well-suited for adding a backtest mode without touching scanner/strategy code. The plan below outlines the work — once shipped, this becomes the foundation for autonomous strategy optimization (e.g. an overnight Claude Code agent that iterates parameters in `config.py`, calls `POST /backtest`, and keeps winning configs — see `karpathy/autoresearch` for the pattern).
+
+**Components needed:**
+
+1. **`BacktestExchange(BaseExchange)`** — drop-in replacement that
+   - Holds historical OHLCV data in memory (per symbol)
+   - Implements `fetch_bars()` by slicing to the current simulated time
+   - Implements `place_order()` / `close_position()` against an in-memory portfolio with fee simulation (uses `KRAKEN_FEE_MAKER` / Alpaca fee model)
+   - Returns deterministic results — no real API calls
+
+2. **`Backtest Runner`** — tick-based loop over historical candles
+   - Advances a central simulated clock candle-by-candle
+   - Calls existing `scanner.run_scan()` at each tick — zero changes to scanner code
+   - Writes trades to a separate `backtest_trades.db` (via existing `DB_PATH` env var)
+
+3. **Historical Data Collector** — separate cron-like job
+   - Polls Kraken `fetch_ohlcv` continuously (Kraken only exposes ~720 bars at a time)
+   - Appends to a SQLite/parquet archive in `data/historical/`
+   - Alpaca already exposes years of history, no collector needed there
+
+4. **Sentiment stub** — `sentiment.py` is not historically reconstructable (Fear&Greed, Polymarket, Tavily are live-only)
+   - In backtest mode: return a neutral "no block" sentiment block
+   - Optional: snapshot live sentiment values to a TSV during prod runs for partial historical replay
+
+5. **LLM handling** — two backtest modes
+   - **Technical-only**: bypass `call_llm()`, let `_technical_signal()` alone decide → fast, deterministic, free
+   - **LLM-cached**: hash the prompt, cache responses in SQLite → deterministic on second run, ~$5-10 per fresh full run
+
+6. **Metrics output** — extend existing `get_fee_stats()`
+   - Add Sharpe ratio, max drawdown, time-in-market
+   - Return as JSON from the new endpoint
+
+7. **API endpoint** — `POST /backtest`
+   - Body: `{params: {...}, market: "crypto"|"stocks", from: ISO, to: ISO, llm_mode: "off"|"cached"}`
+   - Response: full metrics dict + trade log
+   - Allows external automation (e.g. parameter sweep scripts, autoresearch-style agents)
+
+**Estimated effort:** ~5-6 days of focused work.
+
+**What's already in place that helps:**
+- `BaseExchange` is a clean dependency-injection seam — zero scanner changes required
+- `calc_indicators()` is a pure function
+- `_technical_signal()` is deterministic and pure
+- `trade_manager.py` uses a parameterized `DB_PATH` — backtest just writes to a separate DB
+- `get_fee_stats()` already computes gross/net P&L, payoff ratio, breakeven win-rate
+
+**What still has to be built:**
+- Central simulated clock (replace `datetime.now()` calls at fixed points)
+- The four components above
+
+---
+
 ## License
 
 Private project — not licensed for public use.
