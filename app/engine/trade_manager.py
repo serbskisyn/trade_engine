@@ -343,3 +343,22 @@ async def check_circuit_breaker() -> tuple[bool, str]:
 def reset_circuit_breaker(hours: int = 1) -> None:
     """Backward-compat-Wrapper für routes.py."""
     circuit_breaker.reset(hours=hours)
+
+
+# ── Pause-Flag (verhindert neue Entries, lässt offene Positionen laufen) ──────
+
+_paused: dict[str, bool] = {"crypto": False, "stocks": False}
+
+
+def pause_market(market: str) -> None:
+    if market in _paused:
+        _paused[market] = True
+
+
+def resume_market(market: str) -> None:
+    if market in _paused:
+        _paused[market] = False
+
+
+def is_paused(market: str) -> bool:
+    return _paused.get(market, False)

@@ -38,10 +38,14 @@ async def _crypto_loop(notify: Notifier | None) -> None:
     logger.info("Crypto-Loop gestartet (alle 5 Min, 24/7)")
     while True:
         try:
-            actions = await run_scan(exchange, KRAKEN_PAIRS, KRAKEN_STAKE_AMOUNT,
-                                     KRAKEN_MAX_POSITIONS, notify)
-            if actions:
-                logger.info("Crypto-Scan: %d Aktionen", len(actions))
+            from app.engine.trade_manager import is_paused
+            if not is_paused("crypto"):
+                actions = await run_scan(exchange, KRAKEN_PAIRS, KRAKEN_STAKE_AMOUNT,
+                                         KRAKEN_MAX_POSITIONS, notify)
+                if actions:
+                    logger.info("Crypto-Scan: %d Aktionen", len(actions))
+            else:
+                logger.debug("Crypto-Loop pausiert — kein Scan.")
         except Exception as e:
             logger.error("Crypto-Loop Fehler: %s", e)
         await asyncio.sleep(_SCAN_INTERVAL)

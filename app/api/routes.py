@@ -120,6 +120,24 @@ async def circuit_breaker_reset(hours: int = 1, x_api_secret: str = Header(defau
     return {"status": "reset", "override_hours": hours}
 
 
+# ── Crypto Pause / Resume ─────────────────────────────────────────────────────
+
+@app.post("/crypto/pause")
+async def crypto_pause(x_api_secret: str = Header(default="")):
+    _auth(x_api_secret)
+    from app.engine.trade_manager import pause_market
+    pause_market("crypto")
+    return {"status": "paused", "market": "crypto"}
+
+
+@app.post("/crypto/resume")
+async def crypto_resume(x_api_secret: str = Header(default="")):
+    _auth(x_api_secret)
+    from app.engine.trade_manager import resume_market
+    resume_market("crypto")
+    return {"status": "active", "market": "crypto"}
+
+
 # ── Manual Scan ───────────────────────────────────────────────────────────────
 
 @app.post("/scan")
