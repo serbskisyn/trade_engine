@@ -5,7 +5,7 @@ from functools import partial
 import ccxt
 import pandas as pd
 
-from app.config import KRAKEN_API_KEY, KRAKEN_API_SECRET, KRAKEN_LIMIT_TIMEOUT
+from app.config import KRAKEN_API_KEY, KRAKEN_API_SECRET, KRAKEN_LIMIT_TIMEOUT, TRADING_DRY_RUN
 from app.exchanges.base import BaseExchange, OrderResult, Side
 from app.strategy.indicators import calc_indicators
 
@@ -186,6 +186,12 @@ class KrakenExchange(BaseExchange):
             else:
                 base_amount = round(amount / price, 8)
 
+            if TRADING_DRY_RUN:
+                logger.info("🧪 DRY-RUN Kraken order: %s %s qty=%.8f @ %.8f (nicht platziert)",
+                            side.value, symbol, base_amount, price)
+                return OrderResult(symbol=symbol, side=side, qty=base_amount,
+                                   price=price, order_id=f"DRYRUN-{symbol}-{side.value}")
+
             params = {"leverage": 2} if short else {}
             order  = await self._place_limit_with_fallback(
                 symbol, side.value, base_amount, params
@@ -205,6 +211,10 @@ class KrakenExchange(BaseExchange):
 
     async def close_position(self, symbol: str, side: str = "long", qty: float | None = None) -> bool:
         try:
+            if TRADING_DRY_RUN:
+                logger.info("🧪 DRY-RUN Kraken close: %s side=%s qty=%s (nicht platziert)",
+                            symbol, side, qty)
+                return True
             if side == "short":
                 if qty is None:
                     logger.warning("Kraken close_position: qty required for short %s", symbol)

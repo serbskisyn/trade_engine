@@ -8,7 +8,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
-from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_PAPER, ALPACA_STAKE_USD
+from app.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_PAPER, ALPACA_STAKE_USD, TRADING_DRY_RUN
 from app.exchanges.base import BaseExchange, OrderResult, Side
 from app.strategy.indicators import calc_indicators
 
@@ -71,6 +71,13 @@ class AlpacaExchange(BaseExchange):
                 df = df.xs(symbol, level=0)
             price = float(df["close"].iloc[-1])
 
+            if TRADING_DRY_RUN:
+                fractional_qty = round(amount / price, 6)
+                logger.info("🧪 DRY-RUN Alpaca order: %s %s notional=%.2f @ %.4f (nicht platziert)",
+                            side.value, symbol, round(amount, 2), price)
+                return OrderResult(symbol=symbol, side=side, qty=fractional_qty,
+                                   price=price, order_id=f"DRYRUN-{symbol}-{side.value}")
+
             alpaca_side  = OrderSide.BUY if side == Side.BUY else OrderSide.SELL
             notional_usd = round(amount, 2)  # Dollar-Betrag statt ganzer Aktien
             order = self._trading.submit_order(MarketOrderRequest(
@@ -86,6 +93,9 @@ class AlpacaExchange(BaseExchange):
 
     async def close_position(self, symbol: str, side: str = "long", qty: float | None = None) -> bool:
         try:
+            if TRADING_DRY_RUN:
+                logger.info("🧪 DRY-RUN Alpaca close: %s (nicht platziert)", symbol)
+                return True
             self._trading.close_position(symbol)
             logger.info("Alpaca position closed: %s", symbol)
             return True

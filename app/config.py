@@ -33,6 +33,11 @@ KRAKEN_FEE_MAKER:     float = float(os.getenv("KRAKEN_FEE_MAKER", "0.0008"))  # 
 ALPACA_API_KEY:       str   = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY:    str   = os.getenv("ALPACA_SECRET_KEY", "")
 ALPACA_PAPER:         bool  = os.getenv("ALPACA_PAPER", "false").lower() == "true"
+
+# Globaler Dry-Run: Orders werden geloggt + mit simuliertem Fill zurückgegeben,
+# aber NICHT an die Börse geschickt (Kraken hat keinen nativen Paper-Modus).
+# Sicherheits-Gate vor dem Hochskalieren der Positionsgröße — kein echtes Geld.
+TRADING_DRY_RUN:      bool  = os.getenv("TRADING_DRY_RUN", "false").lower() == "true"
 ALPACA_STAKE_USD:     float = float(os.getenv("ALPACA_STAKE_USD", "10"))
 ALPACA_MAX_POSITIONS: int   = int(os.getenv("ALPACA_MAX_POSITIONS", "3"))
 ALPACA_SYMBOLS: list[str] = [

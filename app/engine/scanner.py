@@ -20,7 +20,10 @@ from app.config import (BUY_CONFIDENCE_CRYPTO, BUY_CONFIDENCE_STOCKS,
                         STOCKS_ENTRY_CUTOFF_HOUR, STOCKS_ENTRY_CUTOFF_MINUTE,
                         STOCKS_DAILY_TREND_GATE,
                         MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
-                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT, ENTRY_DEBATE_ENABLED)
+                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT, ENTRY_DEBATE_ENABLED, TRADING_DRY_RUN)
+
+# Telegram-Marker: bei Dry-Run werden Orders nur simuliert (kein echtes Geld)
+_DRY = "🧪 *DRY-RUN* (simuliert)\n" if TRADING_DRY_RUN else ""
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
@@ -321,7 +324,7 @@ async def _execute_scan(
                 if result:
                     sign   = "+" if result["pl_pct"] >= 0 else ""
                     pl_str = _fmt_pl_with_fee(market, result)
-                    msg    = (f"🛑 *{exchange.name.capitalize()} Stop*\n"
+                    msg    = (f"{_DRY}🛑 *{exchange.name.capitalize()} Stop*\n"
                               f"`{symbol}` {sign}{result['pl_pct']:.2f}% ({pl_str})\n"
                               f"Grund: {res['stop_reason']}")
                     actions.append(msg)
@@ -390,7 +393,7 @@ async def _execute_scan(
                     await tm.open_position(market, symbol, order.price, order.qty, side="long")
                     vol_info  = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
                     price_str = _fmt_price(market, order.price)
-                    msg = (f"🟢 *{exchange.name.capitalize()} Long*\n"
+                    msg = (f"{_DRY}🟢 *{exchange.name.capitalize()} Long*\n"
                            f"`{symbol}` @ {price_str}\n"
                            f"Conf: {conf:.2f} | {reason}{vol_info}")
                     actions.append(msg)
@@ -404,7 +407,7 @@ async def _execute_scan(
                     await tm.open_position(market, symbol, order.price, order.qty, side="short")
                     vol_info  = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
                     price_str = _fmt_price(market, order.price)
-                    msg = (f"🔴 *{exchange.name.capitalize()} Short*\n"
+                    msg = (f"{_DRY}🔴 *{exchange.name.capitalize()} Short*\n"
                            f"`{symbol}` @ {price_str}\n"
                            f"Conf: {conf:.2f} | {reason}{vol_info}")
                     actions.append(msg)
