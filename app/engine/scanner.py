@@ -20,10 +20,11 @@ from app.config import (BUY_CONFIDENCE_CRYPTO, BUY_CONFIDENCE_STOCKS,
                         STOCKS_ENTRY_CUTOFF_HOUR, STOCKS_ENTRY_CUTOFF_MINUTE,
                         STOCKS_DAILY_TREND_GATE,
                         MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
-                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT)
+                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT, ENTRY_DEBATE_ENABLED)
 from app.exchanges.base import BaseExchange, Side
 from app.engine import trade_manager as tm
 from app.strategy.llm import build_prompt, call_llm
+from app.strategy.debate import call_llm_debate
 from app.strategy.sentiment import build_sentiment_block, should_block_entry
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,12 @@ async def _fetch_and_analyse(
         loop            = asyncio.get_event_loop()
         sentiment_block = await loop.run_in_executor(None, build_sentiment_block, symbol)
         prompt     = build_prompt(symbol, df, sentiment_block, position, mkt_str)
-        llm_result = await call_llm(prompt, market=market)
+        # Entries (keine offene Position) gehen durch die Bull/Bear+Judge-Debatte,
+        # Exits bleiben beim schnellen Einzel-Call.
+        if position is None and ENTRY_DEBATE_ENABLED:
+            llm_result = await call_llm_debate(prompt, market=market)
+        else:
+            llm_result = await call_llm(prompt, market=market)
 
         bb_upper = float(df.iloc[-1].get("bb_upper", 0))
         bb_lower = float(df.iloc[-1].get("bb_lower", 0))

@@ -56,6 +56,11 @@ BUY_CONFIDENCE_CRYPTO:  float = float(os.getenv("BUY_CONFIDENCE_CRYPTO",  str(BU
 BUY_CONFIDENCE_STOCKS:  float = float(os.getenv("BUY_CONFIDENCE_STOCKS",  "0.75"))
 SELL_CONFIDENCE_CRYPTO: float = float(os.getenv("SELL_CONFIDENCE_CRYPTO", str(SELL_CONFIDENCE)))
 SELL_CONFIDENCE_STOCKS: float = float(os.getenv("SELL_CONFIDENCE_STOCKS", "0.75"))
+
+# Entry-Debatte (Bull/Bear+Judge statt einzelnem LLM-Call) — nur für ENTRIES
+# auf Symbole die den Technik-Vorfilter passieren. Adressiert den Conviction-Cap
+# (einzelner Call cappt ~0.56). Nur crypto default-an; Exits nutzen weiter call_llm.
+ENTRY_DEBATE_ENABLED: bool = os.getenv("ENTRY_DEBATE_ENABLED", "true").lower() == "true"
 EXIT_CONFIDENCE_CRYPTO: float = float(os.getenv("EXIT_CONFIDENCE_CRYPTO", str(EXIT_CONFIDENCE)))
 EXIT_CONFIDENCE_STOCKS: float = float(os.getenv("EXIT_CONFIDENCE_STOCKS", "0.75"))
 
