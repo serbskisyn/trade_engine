@@ -121,11 +121,21 @@ def _summarize(trades: list[dict]) -> dict:
     pls = [t["pl"] for t in trades]
     wins = [p for p in pls if p > 0]
     losses = [p for p in pls if p <= 0]
+    avg_win = (sum(wins) / len(wins)) if wins else 0.0
+    avg_loss = (sum(losses) / len(losses)) if losses else 0.0  # negative
+    wr = len(wins) / len(trades)
+    # Reward:Risk-Verhältnis — |avgWin| / |avgLoss|
+    r = (avg_win / abs(avg_loss)) if avg_loss != 0 else float("inf")
+    # Kelly f* = WR − (1 − WR) / R  (negativ = nicht setzen)
+    kelly = wr - (1 - wr) / r if r > 0 else -1.0
     return {
         "n": len(trades),
-        "win_rate": len(wins) / len(trades),
-        "avg_win": (sum(wins) / len(wins)) if wins else 0.0,
-        "avg_loss": (sum(losses) / len(losses)) if losses else 0.0,
+        "win_rate": wr,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "r": r,
+        "kelly": kelly,
+        "half_kelly": kelly / 2 if kelly > 0 else 0.0,
         "net": sum(pls),
         "expectancy": sum(pls) / len(trades),
         "best": max(pls),
@@ -143,10 +153,35 @@ def _print_summary(label: str, s: dict) -> None:
           f"best={s['best']*100:+5.2f}%")
 
 
+_DEFAULT_SWEEP = (0.010, 0.015, 0.020, 0.025, 0.030, 0.040, 0.050, 0.060)
+
+
+def _print_sweep_table(rows: list[tuple[str, dict]]) -> None:
+    """Tabular sweep output with R + Kelly columns."""
+    header = (f"  {'Param':<14} {'n':>3}  {'WR':>5}  {'avgW':>6}  {'avgL':>7}  "
+              f"{'R':>5}  {'Exp':>7}  {'Net':>7}  {'Kelly f*':>9}  {'½-Kelly':>8}")
+    print(header)
+    print("  " + "─" * (len(header) - 2))
+    for label, s in rows:
+        if s.get("n", 0) == 0:
+            print(f"  {label:<14} keine Trades")
+            continue
+        print(f"  {label:<14} {s['n']:>3}  {s['win_rate']*100:4.1f}%  "
+              f"{s['avg_win']*100:+5.2f}%  {s['avg_loss']*100:+6.2f}%  "
+              f"{s['r']:>5.2f}  {s['expectancy']*100:+6.3f}%  {s['net']*100:+6.2f}%  "
+              f"{s['kelly']*100:+8.1f}%  {s['half_kelly']*100:+7.1f}%")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=720, help="5m-Candles pro Pair (Kraken-Max ~720)")
     parser.add_argument("--fee", type=float, default=0.0016, help="Round-trip-Fee (Maker 0.08%%×2)")
+    parser.add_argument("--simple", action="store_true",
+                        help="ALT-vs-NEU-Vergleich (2 Sets) statt Sweep")
+    parser.add_argument(
+        "--trail-grid", type=str, default=",".join(str(x) for x in _DEFAULT_SWEEP),
+        help="Komma-separierte trail_pct-Werte für den Sweep (default: 1.0-6.0%%)",
+    )
     args = parser.parse_args()
 
     pairs = config.KRAKEN_PAIRS
@@ -154,38 +189,58 @@ def main() -> int:
     activate = getattr(config, "TRAILING_ACTIVATE_PCT_CRYPTO", 0.03)
     max_hold = config.MAX_HOLD_CANDLES
 
-    # Param-Sets: ALT (vor 27.05.) vs NEU (Gold-Tuning)
-    PARAM_SETS = {
-        "ALT trail1.5%": dict(stop_pct=stop, trail_activate_pct=activate, trail_pct=0.015, max_hold=max_hold),
-        "NEU trail3.0%": dict(stop_pct=stop, trail_activate_pct=activate, trail_pct=0.030, max_hold=max_hold),
-    }
+    if args.simple:
+        param_sets = {
+            "ALT trail1.5%": dict(stop_pct=stop, trail_activate_pct=activate, trail_pct=0.015, max_hold=max_hold),
+            "NEU trail3.0%": dict(stop_pct=stop, trail_activate_pct=activate, trail_pct=0.030, max_hold=max_hold),
+        }
+    else:
+        trail_values = [float(x.strip()) for x in args.trail_grid.split(",") if x.strip()]
+        param_sets = {
+            f"trail {t*100:>4.1f}%": dict(stop_pct=stop, trail_activate_pct=activate,
+                                          trail_pct=t, max_hold=max_hold)
+            for t in trail_values
+        }
 
-    print(f"Backtest — {len(pairs)} Pairs, {args.limit} Candles (5m), Fee {args.fee*100:.2f}% RT")
+    mode = "SIMPLE" if args.simple else f"SWEEP ({len(param_sets)} trail-Werte)"
+    print(f"Backtest {mode} — {len(pairs)} Pairs, {args.limit} Candles (5m), Fee {args.fee*100:.2f}% RT")
     print(f"Stop={stop*100:.1f}%  Trail-Activate={activate*100:.1f}%  Max-Hold={max_hold}\n")
 
     ex = ccxt.kraken({"enableRateLimit": True})
-    agg: dict[str, list[dict]] = {k: [] for k in PARAM_SETS}
+    agg: dict[str, list[dict]] = {k: [] for k in param_sets}
 
+    skipped = 0
     for symbol in pairs:
         df = _fetch_history(ex, symbol, args.limit)
         if df is None:
             print(f"{symbol:<10} — übersprungen (zu wenig Daten)")
+            skipped += 1
             continue
-        line = f"{symbol:<10}"
-        for set_name, params in PARAM_SETS.items():
-            trades = simulate(df, fee=args.fee, **params)
-            agg[set_name].extend(trades)
-            s = _summarize(trades)
-            line += f"  [{set_name}: n={s.get('n',0)} net={s.get('net',0)*100:+.2f}%]"
-        print(line)
+        for set_name, params in param_sets.items():
+            agg[set_name].extend(simulate(df, fee=args.fee, **params))
 
-    print("\n" + "=" * 70)
-    print("AGGREGAT über alle Pairs:")
-    for set_name in PARAM_SETS:
-        _print_summary(set_name, _summarize(agg[set_name]))
-    print("=" * 70)
-    print("\nHinweis: Entry-Proxy = Technik-Vorfilter (kein LLM). Vergleich ALT vs NEU\n"
-          "ist aussagekräftig (gleiche Entries), Absolutwerte nur indikativ (kurzes Fenster).")
+    print(f"\n{'=' * 90}")
+    print(f"AGGREGAT über {len(pairs) - skipped} Pairs:")
+    print(f"{'=' * 90}")
+    summaries = [(name, _summarize(agg[name])) for name in param_sets]
+    _print_sweep_table(summaries)
+    print("=" * 90)
+
+    if not args.simple:
+        # Optima identifizieren
+        viable = [(n, s) for n, s in summaries if s.get("n", 0) > 0]
+        if viable:
+            best_exp = max(viable, key=lambda x: x[1]["expectancy"])
+            best_kelly = max(viable, key=lambda x: x[1]["kelly"])
+            print(f"\n🥇 Beste Expectancy: {best_exp[0]}  →  "
+                  f"Exp {best_exp[1]['expectancy']*100:+.3f}%/Trade  "
+                  f"(R={best_exp[1]['r']:.2f}, WR={best_exp[1]['win_rate']*100:.1f}%)")
+            print(f"🥇 Bestes Kelly f*:  {best_kelly[0]}  →  "
+                  f"f* {best_kelly[1]['kelly']*100:+.1f}%  "
+                  f"(½-Kelly ≈ {best_kelly[1]['half_kelly']*100:+.1f}% Stake)")
+
+    print("\nHinweis: Entry-Proxy = Vorfilter (kein LLM). Bei R≤1 zeigt Kelly negativ →\n"
+          "nicht setzen. Kelly nur indikativ — in der Praxis ½-Kelly oder weniger.")
     return 0
 
 
