@@ -182,6 +182,8 @@ def main() -> int:
         "--trail-grid", type=str, default=",".join(str(x) for x in _DEFAULT_SWEEP),
         help="Komma-separierte trail_pct-Werte für den Sweep (default: 1.0-6.0%%)",
     )
+    parser.add_argument("--out", type=str, default="",
+                        help="Hängt einen JSON-Summary-Eintrag an diese Datei an (für tägliches Tracking)")
     args = parser.parse_args()
 
     pairs = config.KRAKEN_PAIRS
@@ -226,18 +228,50 @@ def main() -> int:
     _print_sweep_table(summaries)
     print("=" * 90)
 
-    if not args.simple:
-        # Optima identifizieren
-        viable = [(n, s) for n, s in summaries if s.get("n", 0) > 0]
-        if viable:
-            best_exp = max(viable, key=lambda x: x[1]["expectancy"])
-            best_kelly = max(viable, key=lambda x: x[1]["kelly"])
-            print(f"\n🥇 Beste Expectancy: {best_exp[0]}  →  "
-                  f"Exp {best_exp[1]['expectancy']*100:+.3f}%/Trade  "
-                  f"(R={best_exp[1]['r']:.2f}, WR={best_exp[1]['win_rate']*100:.1f}%)")
-            print(f"🥇 Bestes Kelly f*:  {best_kelly[0]}  →  "
-                  f"f* {best_kelly[1]['kelly']*100:+.1f}%  "
-                  f"(½-Kelly ≈ {best_kelly[1]['half_kelly']*100:+.1f}% Stake)")
+    viable = [(n, s) for n, s in summaries if s.get("n", 0) > 0]
+    best_exp = max(viable, key=lambda x: x[1]["expectancy"]) if viable else None
+    best_kelly = max(viable, key=lambda x: x[1]["kelly"]) if viable else None
+
+    if not args.simple and best_exp and best_kelly:
+        print(f"\n🥇 Beste Expectancy: {best_exp[0]}  →  "
+              f"Exp {best_exp[1]['expectancy']*100:+.3f}%/Trade  "
+              f"(R={best_exp[1]['r']:.2f}, WR={best_exp[1]['win_rate']*100:.1f}%)")
+        print(f"🥇 Bestes Kelly f*:  {best_kelly[0]}  →  "
+              f"f* {best_kelly[1]['kelly']*100:+.1f}%  "
+              f"(½-Kelly ≈ {best_kelly[1]['half_kelly']*100:+.1f}% Stake)")
+
+    if args.out:
+        import json
+        from datetime import date
+        from pathlib import Path
+
+        def _pick(label_summary, params):
+            label, s = label_summary
+            return {
+                "label": label,
+                "trail_pct": params.get("trail_pct"),
+                "win_rate": s["win_rate"], "r": s["r"], "kelly": s["kelly"],
+                "expectancy": s["expectancy"], "net": s["net"],
+                "avg_win": s["avg_win"], "avg_loss": s["avg_loss"], "n": s["n"],
+            }
+
+        entry = {
+            "date": date.today().isoformat(),
+            "mode": mode,
+            "limit": args.limit,
+            "fee": args.fee,
+            "stop_pct": stop,
+            "trail_activate_pct": activate,
+            "pairs_scanned": len(pairs) - skipped,
+            "results": [_pick((name, s), param_sets[name]) for name, s in summaries if s.get("n", 0) > 0],
+            "best_by_expectancy": _pick(best_exp, param_sets[best_exp[0]]) if best_exp else None,
+            "best_by_kelly": _pick(best_kelly, param_sets[best_kelly[0]]) if best_kelly else None,
+        }
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        print(f"\n📄 Summary angehängt → {out}")
 
     print("\nHinweis: Entry-Proxy = Vorfilter (kein LLM). Bei R≤1 zeigt Kelly negativ →\n"
           "nicht setzen. Kelly nur indikativ — in der Praxis ½-Kelly oder weniger.")
