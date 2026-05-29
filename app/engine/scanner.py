@@ -390,7 +390,8 @@ async def _execute_scan(
                 order = await exchange.place_order(symbol, Side.BUY, adjusted_stake)
                 if order:
                     open_count += 1
-                    await tm.open_position(market, symbol, order.price, order.qty, side="long")
+                    await tm.open_position(market, symbol, order.price, order.qty,
+                                           side="long", mode="dry_run" if TRADING_DRY_RUN else "live")
                     vol_info  = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
                     price_str = _fmt_price(market, order.price)
                     msg = (f"{_DRY}🟢 *{exchange.name.capitalize()} Long*\n"
@@ -404,7 +405,8 @@ async def _execute_scan(
                 order = await exchange.place_order(symbol, Side.SELL, adjusted_stake, short=True)
                 if order:
                     open_count += 1
-                    await tm.open_position(market, symbol, order.price, order.qty, side="short")
+                    await tm.open_position(market, symbol, order.price, order.qty,
+                                           side="short", mode="dry_run" if TRADING_DRY_RUN else "live")
                     vol_info  = f" | Vol-Faktor: {vol_factor:.2f}" if vol_factor < 0.95 else ""
                     price_str = _fmt_price(market, order.price)
                     msg = (f"{_DRY}🔴 *{exchange.name.capitalize()} Short*\n"

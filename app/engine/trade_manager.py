@@ -68,6 +68,7 @@ async def _init_schema(conn: aiosqlite.Connection) -> None:
             trailing_active INTEGER NOT NULL DEFAULT 0,
             opened_at     TEXT NOT NULL,
             candles_held  INTEGER NOT NULL DEFAULT 0,
+            mode          TEXT NOT NULL DEFAULT 'live',
             UNIQUE(market, symbol)
         )
     """)
@@ -83,9 +84,19 @@ async def _init_schema(conn: aiosqlite.Connection) -> None:
             pl_pct      REAL,
             pl_abs      REAL,
             reason      TEXT,
-            closed_at   TEXT NOT NULL
+            closed_at   TEXT NOT NULL,
+            mode        TEXT NOT NULL DEFAULT 'live'
         )
     """)
+    # Migration: add `mode` column to existing DBs that pre-date it.
+    for table in ("positions", "trade_log"):
+        async with conn.execute(f"PRAGMA table_info({table})") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "mode" not in cols:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'"
+            )
+            logger.info("[TradeManager] Migration: added 'mode' column to %s", table)
     await conn.commit()
 
 
@@ -115,29 +126,29 @@ async def close_db() -> None:
 # ── Position CRUD ─────────────────────────────────────────────────────────────
 
 async def open_position(market: Market, symbol: str, entry_price: float, qty: float,
-                        side: str = "long") -> None:
+                        side: str = "long", mode: str = "live") -> None:
     conn = await _get_db()
     await conn.execute("""
         INSERT OR REPLACE INTO positions
-          (market, symbol, side, entry_price, qty, peak_price, trailing_active, opened_at, candles_held)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0)
+          (market, symbol, side, entry_price, qty, peak_price, trailing_active, opened_at, candles_held, mode)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?)
     """, (market, symbol, side, entry_price, qty, entry_price,
-           datetime.now(timezone.utc).isoformat()))
+           datetime.now(timezone.utc).isoformat(), mode))
     await conn.commit()
-    logger.info("[TradeManager] Opened %s %s %s @ %.8f qty=%.4f",
-                side.upper(), market, symbol, entry_price, qty)
+    logger.info("[TradeManager] Opened %s %s %s @ %.8f qty=%.4f mode=%s",
+                side.upper(), market, symbol, entry_price, qty, mode)
 
 
 async def close_position(market: Market, symbol: str, exit_price: float, reason: str) -> dict | None:
     conn = await _get_db()
     async with conn.execute(
-        "SELECT entry_price, qty, side FROM positions WHERE market=? AND symbol=?",
+        "SELECT entry_price, qty, side, mode FROM positions WHERE market=? AND symbol=?",
         (market, symbol)
     ) as cur:
         row = await cur.fetchone()
     if not row:
         return None
-    entry_price, qty, pos_side = row
+    entry_price, qty, pos_side, mode = row
 
     if pos_side == "short":
         pl_abs = (entry_price - exit_price) * qty
@@ -147,10 +158,10 @@ async def close_position(market: Market, symbol: str, exit_price: float, reason:
         pl_pct = (exit_price - entry_price) / entry_price * 100
 
     await conn.execute("""
-        INSERT INTO trade_log (market, symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO trade_log (market, symbol, side, entry_price, exit_price, qty, pl_pct, pl_abs, reason, closed_at, mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (market, symbol, pos_side, entry_price, exit_price, qty, pl_pct, pl_abs, reason,
-           datetime.now(timezone.utc).isoformat()))
+           datetime.now(timezone.utc).isoformat(), mode))
     await conn.execute("DELETE FROM positions WHERE market=? AND symbol=?", (market, symbol))
     await conn.commit()
     logger.info("[TradeManager] Closed %s %s %s @ %.8f | P&L: %+.2f%% reason=%s",
