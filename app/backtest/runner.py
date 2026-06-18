@@ -97,16 +97,51 @@ async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | N
     return _metrics(trades, p)
 
 
+def _max_drawdown(equity: list[float]) -> float:
+    """Largest peak-to-trough drop on the cumulative-return equity curve."""
+    peak = 0.0
+    mdd = 0.0
+    for e in equity:
+        peak = max(peak, e)
+        mdd = min(mdd, e - peak)
+    return round(mdd, 6)
+
+
 def _metrics(trades: list[dict], p: BacktestParams) -> dict:
     n = len(trades)
-    wins = sum(1 for t in trades if t["return_pct"] > 0)
-    net = sum(t["return_pct"] for t in trades)
+    rets = [t["return_pct"] for t in trades]
+    wins = [r for r in rets if r > 0]
+    losses = [r for r in rets if r <= 0]
+    net = sum(rets)
+    win_rate = len(wins) / n if n else 0.0
+
+    avg_win = (sum(wins) / len(wins)) if wins else 0.0
+    avg_loss = (sum(losses) / len(losses)) if losses else 0.0   # ≤ 0
+    payoff = (avg_win / abs(avg_loss)) if avg_loss else 0.0      # avg_win / avg_loss
+    # Kelly fraction: W - (1-W)/payoff. 0 if no payoff (degenerate).
+    kelly = (win_rate - (1 - win_rate) / payoff) if payoff else 0.0
+    # Expectancy in R-multiples: per-trade return measured in units of risk (stop).
+    risk = p.stop_pct or 1.0
+    avg_R = (net / n) / risk if n else 0.0
+
+    equity, cum = [], 0.0
+    for r in rets:
+        cum += r
+        equity.append(cum)
+
     return {
         "n_trades": n,
-        "wins": wins,
-        "win_rate": round(wins / n, 4) if n else 0.0,
+        "wins": len(wins),
+        "win_rate": round(win_rate, 4),
         "net_pct": round(net, 6),
         "avg_return_pct": round(net / n, 6) if n else 0.0,
+        "avg_win_pct": round(avg_win, 6),
+        "avg_loss_pct": round(avg_loss, 6),
+        "payoff_ratio": round(payoff, 4),
+        "expectancy_R": round(avg_R, 4),
+        "kelly": round(kelly, 4),
+        "max_drawdown_pct": _max_drawdown(equity),
+        "equity_curve": [round(e, 6) for e in equity],
         "params": asdict(p),
         "trades": trades,
     }
