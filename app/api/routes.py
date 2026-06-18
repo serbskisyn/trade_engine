@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 import asyncio
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
-from app.config import API_SECRET, ALPACA_API_KEY, KRAKEN_API_KEY
+from app.config import API_SECRET, ALPACA_API_KEY, KRAKEN_API_KEY, TRADING_DRY_RUN
 from app.engine import trade_manager as tm
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ async def status(x_api_secret: str = Header(default="")):
             pass
     cb_broken, cb_reason = await tm.check_circuit_breaker()
     result["circuit_breaker"] = {"active": cb_broken, "reason": cb_reason}
+    result["dry_run"] = TRADING_DRY_RUN
     return result
 
 
@@ -167,3 +169,42 @@ async def manual_scan(
 
     background_tasks.add_task(_do_scan)
     return {"status": "scan gestartet", "market": market}
+
+
+# ── Backtest (harness increment 4) ─────────────────────────────────────────────
+# Technical-only backtest over the collected OHLCV history. Lets a caller (or the
+# autoresearch harness) measure a parameter set BEFORE touching the live config.
+
+class BacktestRequest(BaseModel):
+    symbols:            list[str] | None = None   # default: KRAKEN_PAIRS
+    timeframe:          str   = "5m"
+    stop_pct:           float = 0.03
+    trail_activate_pct: float = 0.03
+    trail_pct:          float = 0.03
+    max_hold:           int   = 48
+    fee:                float = 0.0008
+    warmup:             int   = 50
+
+
+@app.post("/backtest")
+async def backtest(req: BacktestRequest, x_api_secret: str = Header(default="")):
+    _auth(x_api_secret)
+    from app.config import KRAKEN_PAIRS
+    from app.backtest.data_collector import load_all
+    from app.backtest.runner import run_backtest, BacktestParams
+
+    symbols = req.symbols or KRAKEN_PAIRS
+    bars = load_all(symbols, req.timeframe)
+    if not bars:
+        raise HTTPException(
+            status_code=400,
+            detail="Keine Historie im Store — erst data_collector.collect() laufen lassen.",
+        )
+    params = BacktestParams(
+        stop_pct=req.stop_pct, trail_activate_pct=req.trail_activate_pct,
+        trail_pct=req.trail_pct, max_hold=req.max_hold, fee=req.fee, warmup=req.warmup,
+    )
+    result = await run_backtest(bars, params)
+    result.pop("trades", None)          # keep the response lean for harness loops
+    result["symbols"] = list(bars.keys())
+    return result
