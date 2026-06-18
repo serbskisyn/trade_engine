@@ -34,18 +34,24 @@ class BacktestParams:
     max_hold:           int   = 48
     fee:                float = 0.0008   # per leg
     warmup:             int   = 50       # bars before the clock starts (indicator warmup)
+    allow_long:         bool  = True
+    allow_short:        bool  = False    # toggle to test "shorts on"
 
 
 @dataclass
 class _Pos:
     entry: float
     entry_i: int
-    peak: float
+    side: str            # "long" | "short"
+    extreme: float       # favourable extreme: peak (long) / trough (short)
     trailing: bool = False
 
 
 async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | None = None) -> dict:
-    """Run a technical-only backtest over the given per-symbol OHLCV history."""
+    """Run a technical-only backtest over the given per-symbol OHLCV history.
+
+    Long and/or short per params.allow_long / allow_short. Short exits are the
+    mirror of long (stop on adverse rise, trail off the trough)."""
     p = params or BacktestParams()
     bx = BacktestExchange(bars, fee=p.fee, warmup=p.warmup)
     ind = {s: calc_indicators(df.copy()) for s, df in bx._bars.items()}
@@ -54,11 +60,13 @@ async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | N
 
     async def _close(symbol: str, price: float, reason: str, i: int) -> None:
         pos = open_pos.pop(symbol)
-        await bx.close_position(symbol)
-        gross = (price - pos.entry) / pos.entry
+        await bx.close_position(symbol, side=pos.side)
+        direction = 1 if pos.side == "long" else -1
+        gross = direction * (price - pos.entry) / pos.entry
         trades.append({
-            "symbol": symbol, "entry": pos.entry, "exit": price, "reason": reason,
-            "held": i - pos.entry_i, "return_pct": round(gross - 2 * p.fee, 6),
+            "symbol": symbol, "side": pos.side, "entry": pos.entry, "exit": price,
+            "reason": reason, "held": i - pos.entry_i,
+            "return_pct": round(gross - 2 * p.fee, 6),
         })
 
     while True:
@@ -70,21 +78,28 @@ async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | N
 
             if symbol in open_pos:
                 pos = open_pos[symbol]
-                pos.peak = max(pos.peak, price)
-                if (pos.peak - pos.entry) / pos.entry >= p.trail_activate_pct:
+                direction = 1 if pos.side == "long" else -1
+                pos.extreme = max(pos.extreme, price) if pos.side == "long" else min(pos.extreme, price)
+                favourable = direction * (pos.extreme - pos.entry) / pos.entry   # ≥0 in-the-money move
+                if favourable >= p.trail_activate_pct:
                     pos.trailing = True
+                pnl = direction * (price - pos.entry) / pos.entry
+                giveback = direction * (pos.extreme - price) / pos.extreme       # retrace from extreme
                 held = i - pos.entry_i
-                if (price - pos.entry) / pos.entry <= -p.stop_pct:
+                if pnl <= -p.stop_pct:
                     await _close(symbol, price, "stop", i)
-                elif pos.trailing and pos.peak > 0 and (pos.peak - price) / pos.peak >= p.trail_pct:
+                elif pos.trailing and pos.extreme > 0 and giveback >= p.trail_pct:
                     await _close(symbol, price, "trail", i)
                 elif held >= p.max_hold:
                     await _close(symbol, price, "max_hold", i)
             else:
-                long_sig, _short = _technical_signal(idf.iloc[: i + 1])
-                if long_sig:
+                long_sig, short_sig = _technical_signal(idf.iloc[: i + 1])
+                if p.allow_long and long_sig:
                     await bx.place_order(symbol, Side.BUY, amount=1.0)
-                    open_pos[symbol] = _Pos(entry=price, entry_i=i, peak=price)
+                    open_pos[symbol] = _Pos(entry=price, entry_i=i, side="long", extreme=price)
+                elif p.allow_short and short_sig:
+                    await bx.place_order(symbol, Side.SELL, amount=1.0, short=True)
+                    open_pos[symbol] = _Pos(entry=price, entry_i=i, side="short", extreme=price)
 
         if not bx.advance():
             break
