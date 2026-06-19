@@ -127,3 +127,26 @@ def load_all(symbols: list[str], timeframe: str = "5m") -> dict[str, pd.DataFram
         if df is not None and not df.empty:
             result[sym] = df
     return result
+
+
+def _cli() -> None:
+    """Entry point for the collection cron: append the latest Kraken bars for all
+    configured pairs to the store (grows history over time).
+    Run via:  python -m app.backtest.data_collector"""
+    import asyncio
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    from app.config import KRAKEN_PAIRS
+    from app.exchanges.kraken import KrakenExchange
+
+    async def _run():
+        counts = await collect(KrakenExchange(), KRAKEN_PAIRS)
+        logger.info("collect done: %d pairs, %d bars total stored",
+                    len(counts), sum(counts.values()))
+
+    asyncio.run(_run())
+
+
+if __name__ == "__main__":
+    _cli()
