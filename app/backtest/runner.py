@@ -36,6 +36,15 @@ class BacktestParams:
     warmup:             int   = 50       # bars before the clock starts (indicator warmup)
     allow_long:         bool  = True
     allow_short:        bool  = False    # toggle to test "shorts on"
+    # llm_mode: gate technical signals through the (cached) LLM confidence vote,
+    # like live. buy_conf = entry threshold; use_debate = Bull/Bear+Judge vs single.
+    llm_mode:           bool  = False
+    buy_conf:           float = 0.55
+    use_debate:         bool  = True
+
+
+# Backtests can't reconstruct historical Fear&Greed/Polymarket/Tavily sentiment.
+_NEUTRAL_SENTIMENT = "Marktstimmung: neutral (Backtest — keine historischen Sentiment-Daten)."
 
 
 @dataclass
@@ -47,16 +56,39 @@ class _Pos:
     trailing: bool = False
 
 
-async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | None = None) -> dict:
-    """Run a technical-only backtest over the given per-symbol OHLCV history.
+async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | None = None,
+                       verdict_fn=None) -> dict:
+    """Run a backtest over the given per-symbol OHLCV history.
 
-    Long and/or short per params.allow_long / allow_short. Short exits are the
-    mirror of long (stop on adverse rise, trail off the trough)."""
+    Long and/or short per params.allow_long / allow_short. Short exits mirror
+    long (stop on adverse rise, trail off the trough). With params.llm_mode, a
+    technical signal is additionally gated through the LLM confidence vote
+    (cached). verdict_fn(prompt)->dict can be injected (tests); default uses the
+    real cached LLM."""
     p = params or BacktestParams()
     bx = BacktestExchange(bars, fee=p.fee, warmup=p.warmup)
     ind = {s: calc_indicators(df.copy()) for s, df in bx._bars.items()}
     open_pos: dict[str, _Pos] = {}
     trades: list[dict] = []
+
+    async def _get_verdict(prompt: str) -> dict:
+        if verdict_fn is not None:
+            return await verdict_fn(prompt)
+        from app.config import OPENROUTER_MODEL
+        from app.backtest.llm_cache import cached_verdict
+        from app.strategy.debate import call_llm_debate
+        from app.strategy.llm import call_llm
+        call = call_llm_debate if p.use_debate else call_llm
+        return await cached_verdict(prompt, "crypto", OPENROUTER_MODEL, call)
+
+    async def _entry_ok(symbol: str, df_slice, side: str) -> bool:
+        if not p.llm_mode:
+            return True
+        from app.strategy.llm import build_prompt
+        prompt = build_prompt(symbol, df_slice, _NEUTRAL_SENTIMENT, None, "crypto")
+        v = await _get_verdict(prompt)
+        want = "buy" if side == "long" else "sell"
+        return v.get("signal") == want and float(v.get("confidence", 0.0)) >= p.buy_conf
 
     async def _close(symbol: str, price: float, reason: str, i: int) -> None:
         pos = open_pos.pop(symbol)
@@ -94,12 +126,12 @@ async def run_backtest(bars: dict[str, pd.DataFrame], params: BacktestParams | N
                     await _close(symbol, price, "max_hold", i)
             else:
                 long_sig, short_sig = _technical_signal(idf.iloc[: i + 1])
-                if p.allow_long and long_sig:
-                    await bx.place_order(symbol, Side.BUY, amount=1.0)
-                    open_pos[symbol] = _Pos(entry=price, entry_i=i, side="long", extreme=price)
-                elif p.allow_short and short_sig:
-                    await bx.place_order(symbol, Side.SELL, amount=1.0, short=True)
-                    open_pos[symbol] = _Pos(entry=price, entry_i=i, side="short", extreme=price)
+                side = ("long" if (p.allow_long and long_sig)
+                        else "short" if (p.allow_short and short_sig) else None)
+                if side and await _entry_ok(symbol, idf.iloc[: i + 1], side):
+                    await bx.place_order(symbol, Side.BUY if side == "long" else Side.SELL,
+                                         amount=1.0, short=(side == "short"))
+                    open_pos[symbol] = _Pos(entry=price, entry_i=i, side=side, extreme=price)
 
         if not bx.advance():
             break

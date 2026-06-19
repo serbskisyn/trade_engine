@@ -184,6 +184,11 @@ class BacktestRequest(BaseModel):
     max_hold:           int   = 48
     fee:                float = 0.0008
     warmup:             int   = 50
+    allow_long:         bool  = True
+    allow_short:        bool  = False
+    llm_mode:           bool  = False   # gate entries through the cached LLM vote
+    buy_conf:           float = 0.55
+    use_debate:         bool  = True
 
 
 @app.post("/backtest")
@@ -203,6 +208,8 @@ async def backtest(req: BacktestRequest, x_api_secret: str = Header(default=""))
     params = BacktestParams(
         stop_pct=req.stop_pct, trail_activate_pct=req.trail_activate_pct,
         trail_pct=req.trail_pct, max_hold=req.max_hold, fee=req.fee, warmup=req.warmup,
+        allow_long=req.allow_long, allow_short=req.allow_short,
+        llm_mode=req.llm_mode, buy_conf=req.buy_conf, use_debate=req.use_debate,
     )
     result = await run_backtest(bars, params)
     result.pop("trades", None)          # keep the response lean for harness loops

@@ -87,6 +87,53 @@ def test_no_signal_no_trades(monkeypatch):
     assert res["net_pct"] == 0.0
 
 
+def test_llm_mode_blocks_entry_below_conf(monkeypatch):
+    # technical signal fires, but the LLM verdict is too weak → no trade
+    _enter_at_first_clock_bar(monkeypatch, warmup=60)
+
+    async def weak(prompt):
+        return {"signal": "buy", "confidence": 0.40, "reason": "meh"}
+
+    res = asyncio.run(run_backtest(
+        {"X": _bars([100.0] * 61 + [110.0])},
+        BacktestParams(warmup=60, llm_mode=True, buy_conf=0.55, max_hold=999, fee=0.0),
+        verdict_fn=weak,
+    ))
+    assert res["n_trades"] == 0
+
+
+def test_llm_mode_allows_entry_above_conf(monkeypatch):
+    # confident matching verdict → the technical signal is taken
+    _enter_at_first_clock_bar(monkeypatch, warmup=60)
+
+    async def strong(prompt):
+        return {"signal": "buy", "confidence": 0.80, "reason": "go"}
+
+    res = asyncio.run(run_backtest(
+        {"X": _bars([100.0] * 61 + [110.0, 104.0])},
+        BacktestParams(warmup=60, llm_mode=True, buy_conf=0.55,
+                       stop_pct=0.5, trail_activate_pct=0.05, trail_pct=0.05,
+                       max_hold=999, fee=0.0),
+        verdict_fn=strong,
+    ))
+    assert res["n_trades"] == 1
+
+
+def test_llm_mode_blocks_on_signal_mismatch(monkeypatch):
+    # LLM says "sell" but the technical signal is long → gate rejects
+    _enter_at_first_clock_bar(monkeypatch, warmup=60)
+
+    async def opposite(prompt):
+        return {"signal": "sell", "confidence": 0.90, "reason": "down"}
+
+    res = asyncio.run(run_backtest(
+        {"X": _bars([100.0] * 61 + [110.0])},
+        BacktestParams(warmup=60, llm_mode=True, buy_conf=0.55, max_hold=999, fee=0.0),
+        verdict_fn=opposite,
+    ))
+    assert res["n_trades"] == 0
+
+
 def test_fee_reduces_return(monkeypatch):
     _enter_at_first_clock_bar(monkeypatch, warmup=60)
     closes = [100.0] * 61 + [110.0, 104.0]
