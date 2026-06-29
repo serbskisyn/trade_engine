@@ -1,7 +1,16 @@
 """Tests für scanner._technical_signal — 3 Pfade: Momentum, EMA-Crossover, BB-Touch."""
 import pandas as pd
+import pytest
 
 from app.engine.scanner import _technical_signal
+
+
+@pytest.fixture(autouse=True)
+def _strict_mode(monkeypatch):
+    """Diese Tests prüfen den STRIKTEN Vorfilter — unabhängig vom Deploy-.env
+    (das EXPLORE_MODE=true setzen kann) hier explizit auf strikt pinnen."""
+    import app.engine.scanner as sc
+    monkeypatch.setattr(sc, "EXPLORE_MODE", False)
 
 
 def _make_df(rsi: float = 50, stoch_k: float = 50, macd_hist: float = 0,
@@ -115,3 +124,15 @@ def test_short_df_returns_no_signal():
     long_ok, short_ok = _technical_signal(df)
     assert long_ok is False
     assert short_ok is False
+
+
+def test_explore_mode_loosens_prefilter(monkeypatch):
+    """Explore-Modus: 1-von-3 + entspannte Schwellen, Volumen egal."""
+    import app.engine.scanner as sc
+    monkeypatch.setattr(sc, "EXPLORE_MODE", True)
+    # Nur 1 Momentum-Signal (RSI<50), Volumen unter Filter — strikt geblockt, explore erlaubt.
+    df = _make_df(rsi=48, stoch_k=50, volume=100, vol_sma6=1000,
+                  ema20=100, ema50=100, prev_ema20=100, prev_ema50=100,
+                  close=100, bb_upper=110, bb_lower=90)
+    long_ok, _ = sc._technical_signal(df)
+    assert long_ok is True

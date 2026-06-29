@@ -33,11 +33,15 @@ async def _crypto_loop(notify: Notifier | None) -> None:
     if not KRAKEN_API_KEY:
         logger.info("Kraken nicht konfiguriert — Crypto-Loop deaktiviert.")
         return
-    from app.exchanges.kraken import get_kraken
-    exchange = get_kraken()
     logger.info("Crypto-Loop gestartet (alle 5 Min, 24/7)")
+    # Self-healing: KEINE Exception darf den Task killen (so starb der Loop früher
+    # still). Exchange wird lazy (re-)initialisiert, Fehler werden geloggt + überlebt.
+    exchange = None
     while True:
         try:
+            if exchange is None:
+                from app.exchanges.kraken import get_kraken
+                exchange = get_kraken()
             from app.engine.trade_manager import is_paused
             if not is_paused("crypto"):
                 actions = await run_scan(exchange, KRAKEN_PAIRS, KRAKEN_STAKE_AMOUNT,
@@ -47,7 +51,8 @@ async def _crypto_loop(notify: Notifier | None) -> None:
             else:
                 logger.debug("Crypto-Loop pausiert — kein Scan.")
         except Exception as e:
-            logger.error("Crypto-Loop Fehler: %s", e)
+            logger.error("Crypto-Loop Fehler (Loop bleibt aktiv): %s", e, exc_info=True)
+            exchange = None   # bei Fehler Exchange neu aufbauen
         await asyncio.sleep(_SCAN_INTERVAL)
 
 
@@ -55,18 +60,21 @@ async def _stocks_loop(notify: Notifier | None) -> None:
     if not ALPACA_API_KEY:
         logger.info("Alpaca nicht konfiguriert — Stocks-Loop deaktiviert.")
         return
-    from app.exchanges.alpaca import get_alpaca
-    exchange = get_alpaca()
     logger.info("Stocks-Loop gestartet (Mo–Fr 10:00–15:45 ET, alle 5 Min)")
+    exchange = None
     while True:
         if _stocks_window_open():
             try:
+                if exchange is None:
+                    from app.exchanges.alpaca import get_alpaca
+                    exchange = get_alpaca()
                 actions = await run_scan(exchange, ALPACA_SYMBOLS, ALPACA_STAKE_USD,
                                          ALPACA_MAX_POSITIONS, notify)
                 if actions:
                     logger.info("Stocks-Scan: %d Aktionen", len(actions))
             except Exception as e:
-                logger.error("Stocks-Loop Fehler: %s", e)
+                logger.error("Stocks-Loop Fehler (Loop bleibt aktiv): %s", e, exc_info=True)
+                exchange = None
         await asyncio.sleep(_SCAN_INTERVAL)
 
 

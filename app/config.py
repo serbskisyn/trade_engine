@@ -83,6 +83,14 @@ STOCKS_ENTRY_CUTOFF_MINUTE: int = int(os.getenv("STOCKS_ENTRY_CUTOFF_MINUTE", "4
 # Blockt Falling-Knife-Käufe an Down-Days, selbst wenn 5m-Reversal-Signale stark wirken.
 STOCKS_DAILY_TREND_GATE: bool = os.getenv("STOCKS_DAILY_TREND_GATE", "true").lower() == "true"
 
+# EXPLORE_MODE — Lern-/Explorations-Modus (NUR sinnvoll mit TRADING_DRY_RUN=true):
+# lockert den Technik-Vorfilter (1-von-3), öffnet Crypto-Shorts, ignoriert das
+# Stocks-Tagestrend-Gate, lockert die Trend-Slope-Schwelle, setzt Re-Entry-Cooldown
+# auf 0 und cappt die Buy-Confidence bei 0.50 — Ziel: viele Paper-Trades als Lerndaten.
+# EIN Flag, voll reversibel (EXPLORE_MODE=false → altes, striktes Verhalten).
+EXPLORE_MODE: bool = os.getenv("EXPLORE_MODE", "false").lower() == "true"
+EXPLORE_BUY_CONF_CAP: float = float(os.getenv("EXPLORE_BUY_CONF_CAP", "0.50"))
+
 # Pro-Markt Stops — Crypto volatiler (3%), Stocks enger (1.5%).
 # STOP_LOSS_PCT bleibt als globaler Fallback für ältere Tests / Legacy.
 STOP_LOSS_PCT:         float = float(os.getenv("STOP_LOSS_PCT",         "0.02"))

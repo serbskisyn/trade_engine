@@ -20,7 +20,8 @@ from app.config import (BUY_CONFIDENCE_CRYPTO, BUY_CONFIDENCE_STOCKS,
                         STOCKS_ENTRY_CUTOFF_HOUR, STOCKS_ENTRY_CUTOFF_MINUTE,
                         STOCKS_DAILY_TREND_GATE,
                         MIN_HOLD_CANDLES, MAX_HOLD_CANDLES, KRAKEN_ALLOW_SHORTS, BB_VOL_SCALING,
-                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT, ENTRY_DEBATE_ENABLED, TRADING_DRY_RUN)
+                        KRAKEN_FEE_MAKER, MIN_PROFIT_PCT, ENTRY_DEBATE_ENABLED, TRADING_DRY_RUN,
+                        EXPLORE_MODE, EXPLORE_BUY_CONF_CAP)
 
 # Telegram-Marker: bei Dry-Run werden Orders nur simuliert (kein echtes Geld)
 _DRY = "🧪 *DRY-RUN* (simuliert)\n" if TRADING_DRY_RUN else ""
@@ -90,10 +91,17 @@ def _technical_signal(df: pd.DataFrame) -> tuple[bool, bool]:
     vol      = float(lat.get("volume", 1))
     vol_sma6 = float(lat.get("vol_sma6", vol)) or vol
     vol_ok   = vol >= vol_sma6 * 0.8
-    long_sigs  = [rsi < 45, stoch_k < 25, p_hist < 0 < hist]
-    short_sigs = [rsi > 58, stoch_k > 75, p_hist > 0 > hist]
-    momentum_long  = vol_ok and sum(long_sigs) >= 2
-    momentum_short = vol_ok and sum(short_sigs) >= 2
+    # Explore-Modus: entspanntere Schwellen + nur 1-von-3 (statt 2) + Volumen egal.
+    if EXPLORE_MODE:
+        long_sigs  = [rsi < 50, stoch_k < 35, p_hist < 0 < hist]
+        short_sigs = [rsi > 50, stoch_k > 65, p_hist > 0 > hist]
+        momentum_long  = sum(long_sigs) >= 1
+        momentum_short = sum(short_sigs) >= 1
+    else:
+        long_sigs  = [rsi < 45, stoch_k < 25, p_hist < 0 < hist]
+        short_sigs = [rsi > 58, stoch_k > 75, p_hist > 0 > hist]
+        momentum_long  = vol_ok and sum(long_sigs) >= 2
+        momentum_short = vol_ok and sum(short_sigs) >= 2
 
     # ── Path 2: EMA crossover (trend-following) ───────────────────────────────
     ema20, ema50   = float(lat.get("ema20", 0)),  float(lat.get("ema50", 0))
@@ -142,17 +150,22 @@ async def _fetch_and_analyse(
         if trend_df is not None and len(trend_df) >= 6:
             ema50     = float(trend_df.iloc[-1]["ema50"])
             slope_pct = (ema50 - float(trend_df.iloc[-6]["ema50"])) / ema50 if ema50 else 0
-            trend_clearly_down = slope_pct < -0.001
+            # Explore: nur STEILE Abwärtstrends blocken Longs (statt jede Mini-Negative-Slope).
+            down_thresh = -0.01 if EXPLORE_MODE else -0.001
+            trend_clearly_down = slope_pct < down_thresh
 
-        # 1D macro trend gate (nur Stocks, opt-in) — blockt Long-Entries an Down-Days
+        # 1D macro trend gate (nur Stocks, opt-in) — im Explore-Modus aus.
         daily_trend_down = False
-        if market == "stocks" and STOCKS_DAILY_TREND_GATE and daily_df is not None and len(daily_df) >= 50:
+        if (not EXPLORE_MODE and market == "stocks" and STOCKS_DAILY_TREND_GATE
+                and daily_df is not None and len(daily_df) >= 50):
             daily_close = float(daily_df.iloc[-1]["close"])
             daily_ema50 = float(daily_df.iloc[-1]["ema50"])
             daily_trend_down = daily_close < daily_ema50
 
         allow_long  = ((not trend_clearly_down) or trend_df is None) and not daily_trend_down
-        allow_short = (trend_clearly_down or trend_df is None) and market == "crypto" and KRAKEN_ALLOW_SHORTS
+        # Explore: Crypto-Shorts auch ohne KRAKEN_ALLOW_SHORTS (2-seitig lernen).
+        allow_short = ((trend_clearly_down or trend_df is None) and market == "crypto"
+                       and (KRAKEN_ALLOW_SHORTS or EXPLORE_MODE))
 
         # ── Open position: check hardware stops first ─────────────────────────
         if position:
@@ -178,7 +191,8 @@ async def _fetch_and_analyse(
                 return {"symbol": symbol, "skip": True, "reason": "stocks_entry_cutoff"}
 
             # Entry: Re-Entry-Cooldown nach Stop-Loss
-            cooldown_min = REENTRY_COOLDOWN_MIN_STOCKS if market == "stocks" else REENTRY_COOLDOWN_MIN_CRYPTO
+            cooldown_min = 0 if EXPLORE_MODE else (
+                REENTRY_COOLDOWN_MIN_STOCKS if market == "stocks" else REENTRY_COOLDOWN_MIN_CRYPTO)
             if await tm.is_in_reentry_cooldown(market, symbol, cooldown_min):
                 return {"symbol": symbol, "skip": True, "reason": "reentry_cooldown"}
 
@@ -280,6 +294,11 @@ async def _execute_scan(
         buy_conf  = BUY_CONFIDENCE_CRYPTO
         sell_conf = SELL_CONFIDENCE_CRYPTO
         exit_conf = EXIT_CONFIDENCE_CRYPTO
+
+    # Explore-Modus: Entry-Confidence cappen → mehr Entries für Lerndaten.
+    if EXPLORE_MODE:
+        buy_conf  = min(buy_conf, EXPLORE_BUY_CONF_CAP)
+        sell_conf = min(sell_conf, EXPLORE_BUY_CONF_CAP)
 
     cb_broken, cb_reason = await tm.check_circuit_breaker()
     if cb_broken:

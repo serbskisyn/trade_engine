@@ -343,6 +343,10 @@ def should_block_entry(pair: str) -> tuple[bool, str]:
     Harter Kauf-Filter basierend auf Sentiment.
     Returns (blocked: bool, reason: str).
     """
+    from app.config import EXPLORE_MODE
+    if EXPLORE_MODE:
+        return False, ""   # Lern-/Explore-Modus: Sentiment-Kauffilter aus
+
     fg = get_fear_greed()
     macro = get_polymarket_macro()
 
