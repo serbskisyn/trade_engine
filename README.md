@@ -11,14 +11,19 @@
   <img src="https://img.shields.io/badge/API-FastAPI%208081-teal?style=flat-square" />
   <img src="https://img.shields.io/badge/Candles-5m-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Stops-30s%20monitor-red?style=flat-square" />
+  <img src="https://img.shields.io/badge/Mode-Paper%20(dry__run)-yellow?style=flat-square" />
+  <img src="https://img.shields.io/badge/LLM-gpt--5.4--nano-orange?style=flat-square" />
 </p>
 
 ---
 
-Trade Engine is a standalone Python service that autonomously scans 30 symbols across two exchanges, generates LLM trading signals, and executes orders — entirely independent of the Telegram frontend. The bot is just a display layer; trades happen even if the bot is down.
+Trade Engine is a standalone Python service that autonomously scans **12 crypto pairs + 18 US stocks** across two exchanges, generates LLM trading signals, and executes orders — entirely independent of the Telegram frontend. The bot is just a display layer; trades happen even if the bot is down.
+
+> **Currently in PAPER mode** (`TRADING_DRY_RUN=true`) — orders are simulated, logged with `mode='dry_run'`. An **`EXPLORE_MODE`** learning toggle (one reversible flag, paper only) loosens the gates to generate many trades as training data — see [Explore / Learning mode](#explore--learning-mode).
 
 ```
-Every 5 minutes:   Fetch 5m candles → Indicators → Sentiment → LLM → Order
+Every 5 minutes:   Fetch 5m candles → Indicators → Trend+Technical pre-filter
+                   → Sentiment → LLM (Bull/Bear/Judge debate) → Order
 Every 30 seconds:  Price check → Stop-loss / Trailing stop → Close if triggered
 ```
 
@@ -29,69 +34,104 @@ Every 30 seconds:  Price check → Stop-loss / Trailing stop → Close if trigge
 ### Signal Pipeline
 
 ```
-Symbol list (15 crypto + 15 stocks)
+Symbol list (12 crypto pairs + 18 US stocks)
         │
         ▼
-Fetch 100× 5m candles (Kraken ccxt / Alpaca SDK)
+Fetch 5m candles (Kraken ccxt / Alpaca SDK) + 1h trend + 1D daily bars
         │
         ▼
-Calculate indicators
-  RSI (EWM, com=13)
-  EMA20 / EMA50
-  Bollinger Bands (20-period)
+Calculate indicators  (RSI · EMA20/50 · Bollinger Bands · Stoch · MACD · vol-SMA)
         │
         ▼
-EMA50 slope filter ──► negative slope → SKIP (no entry)
+Trend gate
+  1h EMA50 slope down            → no longs
+  stocks: daily close < EMA50    → no longs (STOCKS_DAILY_TREND_GATE)
+  crypto downtrend + shorts on   → allow short  (KRAKEN_ALLOW_SHORTS)
         │
         ▼
-Sentiment block
-  Fear & Greed Index (alternative.me, 1h cache)
-  Polymarket Gamma API (macro events, 30min cache)
-  Tavily news headlines (15min cache)
-  ──► extreme fear / extreme greed / high macro risk → SKIP
+Technical pre-filter (_technical_signal) — any ONE path reaches the LLM:
+  1) Momentum  2-of-3 (RSI · Stoch-K · MACD-cross) + volume
+  2) EMA20/50 crossover
+  3) Bollinger-Band touch
+  + re-entry cooldown · stocks entry-cutoff before close
         │
         ▼
-LLM decision (OpenRouter / GPT-4o-mini)
-  System prompt: trend reversal specialist
-  Input: 30 candles + indicators + sentiment block + open position context
+Sentiment block (should_block_entry)
+  Fear & Greed (alternative.me, 1h) · Polymarket macro (30min) · Tavily news (15min)
+  ──► extreme fear / extreme greed / high macro risk → SKIP buy
+        │
+        ▼
+LLM decision  (OpenRouter · openai/gpt-5.4-nano)
+  ENTRIES: Bull ‖ Bear ‖ Judge debate (strategy/debate.py) — beats the single-call
+           conviction cap (~0.56 → decisive 0.62–0.67). EXITS: single call.
   Output: {"signal": "buy|sell|hold", "confidence": 0.0–1.0, "reason": "..."}
         │
         ▼
-confidence ≥ 0.65 → Execute order
-confidence < 0.65 → hold
+Per-market confidence gate
+  crypto: buy ≥ 0.55 · sell ≥ 0.70 · exit ≥ 0.68
+  stocks: buy ≥ 0.75 · sell/exit ≥ 0.75
+  (EXPLORE_MODE caps buy/sell at 0.50)
+        │
+        ▼
+Execute (volatility-adjusted stake: wider BB → smaller position)
 ```
 
 ### Stop Monitor (30s, no LLM)
 
 ```
-Every 30 seconds per open position:
+Every 30 seconds per open position (per-market stops; crypto is more volatile):
   Fetch current price (cheap ticker call)
         │
-        ├── loss > 2%         → STOP-LOSS → close immediately
+        ├── loss > stop %          → STOP-LOSS → close immediately
+        │     crypto 3% · stocks 1.5%
         │
-        └── profit > 2% ever reached (trailing active)?
-              └── price dropped > 1% from peak → TRAILING STOP → close
+        └── profit > activate % ever reached (trailing active)?
+              crypto +3% · stocks +2%
+              └── price dropped > trail % from peak → TRAILING STOP → close
+                    crypto 3% · stocks 1%
+  LLM exits are gated by MIN_PROFIT_PCT (1.2%) so winners aren't cut at +0.3%.
+  MIN_HOLD 2 candles · MAX_HOLD 48 candles (4h force-close).
 ```
+
+---
+
+## Explore / Learning mode
+
+`EXPLORE_MODE=true` (**paper only**) is one reversible flag that loosens every entry gate to
+generate many trades as learning data:
+- `_technical_signal` → 1-of-3 + relaxed thresholds (volume ignored)
+- crypto shorts on · stocks daily-trend gate off · 1h-slope blocks longs only on *steep* downtrends
+- re-entry cooldown 0 · buy/sell confidence capped at 0.50
+- Fear & Greed / macro sentiment buy-block bypassed
+
+Set `EXPLORE_MODE=false` to restore the strict production gates. With strict gates in choppy
+or bearish markets, very few symbols pass the pre-filter — that's by design.
+
+> **Ops notes.** Trades only happen when the LLM call succeeds — a depleted OpenRouter key
+> returns `403 "Key limit exceeded"` and every signal falls back to `hold` (raise the key
+> limit / top up, or point at a working LLM proxy). The crypto/stocks scan loops are
+> self-healing — an exchange error no longer kills the task (it re-inits next cycle).
 
 ---
 
 ## Watchlists
 
-**Crypto — Kraken (15 BTC pairs, 24/7)**
+**Crypto — Kraken (12 BTC pairs, 24/7)** — `config.KRAKEN_PAIRS`
 
-| | | | | |
-|---|---|---|---|---|
-| ETH/BTC | SOL/BTC | XRP/BTC | ADA/BTC | LTC/BTC |
-| LINK/BTC | DOT/BTC | ATOM/BTC | DOGE/BTC | XLM/BTC |
-| UNI/BTC | AAVE/BTC | ETC/BTC | TRX/BTC | XMR/BTC |
+| | | | |
+|---|---|---|---|
+| ETH/BTC | SOL/BTC | XRP/BTC | ADA/BTC |
+| LTC/BTC | LINK/BTC | DOT/BTC | ATOM/BTC |
+| DOGE/BTC | XLM/BTC | UNI/BTC | TRX/BTC |
 
-**US Stocks — Alpaca (15 symbols, Mo–Fr 10:00–15:45 ET)**
+**US Stocks — Alpaca (18 symbols, Mo–Fr 10:00–15:45 ET)** — `config.ALPACA_SYMBOLS`
+(incl. inverse ETFs SQQQ/SDS/SPXS for short-side exposure)
 
-| | | | | |
-|---|---|---|---|---|
-| SPY | QQQ | GLD | AAPL | MSFT |
-| NVDA | TSLA | XLF | USO | AMZN |
-| GOOGL | META | AMD | JPM | IWM |
+| | | | | | |
+|---|---|---|---|---|---|
+| SPY | QQQ | GLD | AAPL | MSFT | NVDA |
+| TSLA | XLF | USO | AMZN | GOOGL | META |
+| AMD | JPM | IWM | SQQQ | SDS | SPXS |
 
 ---
 
@@ -172,21 +212,25 @@ trade_engine/
 │   │   └── alpaca.py          Alpaca via alpaca-py (5m candles, market hours)
 │   │
 │   ├── strategy/
-│   │   ├── indicators.py      RSI · EMA20/50 · Bollinger Bands
-│   │   ├── llm.py             OpenRouter prompt builder + async call
-│   │   └── sentiment.py       Fear&Greed · Polymarket · Tavily
+│   │   ├── indicators.py      RSI · EMA20/50 · Bollinger · Stoch · MACD
+│   │   ├── llm.py             OpenRouter prompt builder + async call (exits)
+│   │   ├── debate.py          Bull ‖ Bear ‖ Judge entry debate
+│   │   └── sentiment.py       Fear&Greed · Polymarket · Tavily (EXPLORE_MODE bypass)
 │   │
 │   ├── engine/
-│   │   ├── trade_manager.py   SQLite positions + stop-loss + trailing stop
-│   │   ├── scanner.py         Per-symbol scan logic (exit + entry path)
-│   │   ├── scheduler.py       asyncio loops: crypto 24/7, stocks Mo–Fr, price monitor
+│   │   ├── trade_manager.py   SQLite positions + per-market stop/trailing
+│   │   ├── scanner.py         Trend gate + _technical_signal + LLM + EXPLORE_MODE
+│   │   ├── scheduler.py       self-healing loops: crypto 24/7, stocks Mo–Fr, price monitor
 │   │   └── price_monitor.py   30s cheap price check — no LLM, no bars
 │   │
+│   ├── backtest/             SHIPPED — BacktestExchange, runner, data collector, metrics
+│   │
 │   └── api/
-│       └── routes.py          FastAPI: /health /status /positions /stats /scan
+│       └── routes.py          FastAPI: /health /status /positions /stats /scan /backtest
 │
-├── data/                      SQLite DB (git-ignored)
-│   └── trades.db              positions table + trade_log table
+├── data/                      SQLite DBs (git-ignored)
+│   ├── trades.db              positions + trade_log (dry_run rows in paper mode)
+│   └── backtest/history.db    historical OHLCV archive
 │
 ├── .env.example
 ├── requirements.txt
@@ -221,19 +265,26 @@ sudo journalctl -u trade_engine -f
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `OPENROUTER_API_KEY` | required | LLM API key |
-| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Model for signals |
+| `OPENROUTER_MODEL` | `openai/gpt-5.4-nano` | Model for signals |
+| `TRADING_DRY_RUN` | `true` | **Paper mode** — simulate orders (`mode='dry_run'`) |
+| `EXPLORE_MODE` | `false` | Learning mode — loosen all gates (paper only), see below |
+| `ENTRY_DEBATE_ENABLED` | `true` | Bull/Bear/Judge debate for entries |
 | `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` | — | Kraken exchange |
-| `KRAKEN_STAKE_AMOUNT` | `0.0003` | BTC per trade |
+| `KRAKEN_STAKE_AMOUNT` | `0.001` | BTC per trade |
 | `KRAKEN_MAX_POSITIONS` | `5` | Max open crypto positions |
+| `KRAKEN_ALLOW_SHORTS` | `false` | Allow crypto shorts in downtrends |
 | `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` | — | Alpaca Markets |
-| `ALPACA_PAPER` | `false` | Paper trading mode |
 | `ALPACA_STAKE_USD` | `10` | USD per stock trade |
 | `ALPACA_MAX_POSITIONS` | `3` | Max open stock positions |
-| `BUY_CONFIDENCE` | `0.65` | Min confidence to buy |
-| `SELL_CONFIDENCE` | `0.65` | Min confidence to sell |
-| `STOP_LOSS_PCT` | `0.02` | Hard stop at −2% |
-| `TRAILING_ACTIVATE_PCT` | `0.02` | Trailing activates at +2% |
-| `TRAILING_TRAIL_PCT` | `0.01` | Trail distance 1% |
+| `STOCKS_DAILY_TREND_GATE` | `true` | Block stock longs below daily EMA50 |
+| `BUY_CONFIDENCE_CRYPTO` / `_STOCKS` | `0.55` / `0.75` | Min confidence to buy (per market) |
+| `SELL_CONFIDENCE_CRYPTO` / `_STOCKS` | `0.70` / `0.75` | Min confidence to short |
+| `EXIT_CONFIDENCE_CRYPTO` / `_STOCKS` | `0.68` / `0.75` | Min confidence for LLM exit |
+| `MIN_PROFIT_PCT` | `0.012` | LLM exit only above +1.2% |
+| `STOP_LOSS_PCT_CRYPTO` | `0.03` | Hard stop crypto −3% (stocks −1.5%) |
+| `TRAILING_ACTIVATE_PCT_CRYPTO` | `0.03` | Trailing activates at +3% (crypto) |
+| `TRAILING_TRAIL_PCT_CRYPTO` | `0.03` | Trail distance 3% (crypto) |
+| `REENTRY_COOLDOWN_MIN_STOCKS` | `60` | Cooldown after a stop before re-entry |
 | `TAVILY_API_KEY` | — | Sentiment news search |
 | `TELEGRAM_BOT_TOKEN` | — | For trade push alerts |
 | `ADMIN_CHAT_ID` | — | Telegram chat to notify |
@@ -252,13 +303,17 @@ sudo journalctl -u trade_engine -f
 
 ---
 
-## Roadmap
+## Backtest Mode (shipped)
 
-### Planned: Backtest Mode
+Lives in **`app/backtest/`** — a `BacktestExchange(BaseExchange)` drop-in, a tick-based runner
+that reuses the *real* `scanner.run_scan()` + `_technical_signal` (zero scanner changes), a
+historical OHLCV collector (`data/backtest/history.db`, hourly cron), an LLM-response cache for
+determinism, and a metrics endpoint. `scripts/backtest_exits.py` sweeps exit-param sets against
+Kraken 5m history (validated Trail 1.5%→3.0%: Net +21%→+22.5%). It's the foundation for
+autonomous strategy optimization (overnight agent that sweeps `config.py` params — see
+`karpathy/autoresearch` for the pattern).
 
-The Trade Engine's `BaseExchange` abstraction makes it well-suited for adding a backtest mode without touching scanner/strategy code. The plan below outlines the work — once shipped, this becomes the foundation for autonomous strategy optimization (e.g. an overnight Claude Code agent that iterates parameters in `config.py`, calls `POST /backtest`, and keeps winning configs — see `karpathy/autoresearch` for the pattern).
-
-**Components needed:**
+**Design (as built):**
 
 1. **`BacktestExchange(BaseExchange)`** — drop-in replacement that
    - Holds historical OHLCV data in memory (per symbol)
@@ -293,18 +348,9 @@ The Trade Engine's `BaseExchange` abstraction makes it well-suited for adding a 
    - Response: full metrics dict + trade log
    - Allows external automation (e.g. parameter sweep scripts, autoresearch-style agents)
 
-**Estimated effort:** ~5-6 days of focused work.
-
-**What's already in place that helps:**
-- `BaseExchange` is a clean dependency-injection seam — zero scanner changes required
-- `calc_indicators()` is a pure function
-- `_technical_signal()` is deterministic and pure
-- `trade_manager.py` uses a parameterized `DB_PATH` — backtest just writes to a separate DB
-- `get_fee_stats()` already computes gross/net P&L, payoff ratio, breakeven win-rate
-
-**What still has to be built:**
-- Central simulated clock (replace `datetime.now()` calls at fixed points)
-- The four components above
+**Seams that made it clean:** `BaseExchange` dependency-injection, pure `calc_indicators()` /
+`_technical_signal()`, parameterized `DB_PATH`, and `get_fee_stats()` (gross/net P&L, payoff
+ratio, breakeven win-rate). Covered by `tests/test_backtest_*`.
 
 ---
 
